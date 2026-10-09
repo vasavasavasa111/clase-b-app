@@ -167,14 +167,17 @@ function ask(q, label, {reveal = true, onDone}){
       else { picked = new Set([i]); finish(); }
     });
     const c = $('#check'); if(c) c.onclick = () => picked.size && finish();
-    const n = $('#next'); if(n){ n.onclick = () => { onDone(result); window.scrollTo(0, 0); }; n.focus({preventScroll: true}); }
+    const n = $('#next'); if(n){ n.onclick = next; n.focus({preventScroll: true}); }
   };
   let result;
+  let moved = false;
+  const next = () => { if(moved) return; moved = true; onDone(result); window.scrollTo(0, 0); };
   const finish = () => {
     done = true;
     result = opts.every((o, i) => o.ok === picked.has(i));
     render();
-    if(!reveal) onDone(result);
+    if(!reveal) return next();
+    if(result) setTimeout(next, 500);   // right answer: flash green, then move on by itself
   };
   render();
 }
@@ -276,7 +279,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=7a8288d8b8')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=c6dba179f0')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img); };
   const saved = get('cb_pw');

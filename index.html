@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Licencia Clase B</title>
+<style>
+:root{
+  --bg:#f4f6f9; --card:#ffffff; --ink:#1b2430; --muted:#5d6b7c; --line:#dfe4ea;
+  --accent:#2563eb; --accent-ink:#ffffff;
+  --ok:#15803d; --ok-bg:#e7f6ec; --bad:#b91c1c; --bad-bg:#fdecec; --miss:#b45309; --miss-bg:#fff4e0;
+  --ru:#6b4fbb;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#11151b; --card:#1a2028; --ink:#e8edf3; --muted:#9aa7b6; --line:#2c3440;
+    --accent:#5b8def; --accent-ink:#0b1220;
+    --ok:#4ade80; --ok-bg:#12301d; --bad:#f87171; --bad-bg:#3a1717; --miss:#fbbf24; --miss-bg:#382a0e;
+    --ru:#b9a5f5;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#11151b; --card:#1a2028; --ink:#e8edf3; --muted:#9aa7b6; --line:#2c3440;
+  --accent:#5b8def; --accent-ink:#0b1220;
+  --ok:#4ade80; --ok-bg:#12301d; --bad:#f87171; --bad-bg:#3a1717; --miss:#fbbf24; --miss-bg:#382a0e;
+  --ru:#b9a5f5;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+.wrap{max-width:760px;margin:0 auto;padding:12px 16px 80px}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.base{flex:0 0 auto;text-align:right;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 10px;min-width:118px;font-variant-numeric:tabular-nums}
+.base b{font-size:18px}
+.base .bar{margin:4px 0 2px;height:5px}
+.base .lbl{font-size:11px;color:var(--muted)}
+h1{font-size:19px;margin:0}
+.stat{color:var(--muted);font-size:14px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 14px}
+button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:8px 12px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+button.tab[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:disabled{opacity:.5;cursor:default}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.meta{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;margin-bottom:6px;gap:8px}
+.q-es{font-weight:600;font-size:17px}
+.ru{color:var(--ru);font-size:15px;margin-top:4px}
+.hide-ru .ru,.hide-ru .opt .ru{display:none}
+.hide-ru .ru.peek,.hide-ru .opt .ru.peek{display:block}
+.img{display:block;max-width:100%;max-height:300px;margin:12px auto;border-radius:8px}
+.opts{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.opt{display:flex;gap:10px;text-align:left;width:100%;padding:10px 12px;border-radius:10px;border:1.5px solid var(--line);background:var(--card)}
+.opt .k{flex:0 0 auto;font-weight:700;color:var(--muted);min-width:1.4em}
+.opt .ru{display:block}
+.opt.sel{border-color:var(--accent)}
+.opt.ok{border-color:var(--ok);background:var(--ok-bg)}
+.opt.bad{border-color:var(--bad);background:var(--bad-bg)}
+.opt.miss{border-color:var(--miss);background:var(--miss-bg)}
+.opt .tag{margin-left:auto;font-size:12px;font-weight:700;align-self:center;white-space:nowrap}
+.opt.ok .tag{color:var(--ok)} .opt.bad .tag{color:var(--bad)} .opt.miss .tag{color:var(--miss)}
+.badge{display:inline-block;font-size:12px;border-radius:6px;padding:1px 6px;background:var(--miss-bg);color:var(--miss);margin-bottom:6px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.spacer{flex:1}
+.bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin:6px 0 12px}
+.bar i{display:block;height:100%;background:var(--accent)}
+.big{font-size:28px;font-weight:700}
+.muted{color:var(--muted)}
+input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:12px}
+label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
+</style>
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body>
+<div class="wrap" id="app">
+  <header>
+    <div>
+      <h1>Licencia Clase B · ES/RU</h1>
+      <div class="stat" id="stat"></div>
+    </div>
+    <div class="base" title="Уникальных вопросов в программе из ~1500 в базе practicatest">
+      <div><b id="baseN"></b> / <span id="baseT"></span></div>
+      <div class="bar"><i id="baseBar"></i></div>
+      <div class="lbl">вопросов в базе</div>
+    </div>
+  </header>
+  <nav>
+    <button class="tab" data-mode="train">Тренировка</button>
+    <button class="tab" data-mode="mistakes">Ошибки</button>
+    <button class="tab" data-mode="exam">Экзамен 35</button>
+    <button class="tab" data-mode="list">Все вопросы</button>
+    <span class="spacer"></span>
+    <label class="chk"><input type="checkbox" id="ruToggle" checked> русский</label>
+  </nav>
+  <main id="view"></main>
+</div>
+<script>
+function startApp(Q, IMG){
+const TOTAL = 1500;   // questions practicatest says it has for Clase B
+
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+// progress: id -> {right, wrong, last: true|false}
+let P = store.get('cb_progress', {});
+const save = () => store.set('cb_progress', P);
+
+const $ = s => document.querySelector(s);
+const view = $('#view');
+const shuffle = a => { a = a.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.random()*(i+1)|0; [a[i],a[j]]=[a[j],a[i]]; } return a; };
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function updStat(){
+  const learned = Q.filter(q => P[q.id] && P[q.id].last === true).length;
+  const wrong = Q.filter(q => P[q.id] && P[q.id].last === false).length;
+  $('#stat').textContent = `верно: ${learned}/${Q.length} · ошибки: ${wrong}`;
+  $('#baseN').textContent = Q.length;
+  $('#baseT').textContent = TOTAL;
+  $('#baseBar').style.width = Math.min(100, Q.length / TOTAL * 100) + '%';
+}
+
+// ---- language toggle
+const ruBox = $('#ruToggle');
+ruBox.checked = store.get('cb_ru', true);
+const applyRu = () => { document.body.classList.toggle('hide-ru', !ruBox.checked); store.set('cb_ru', ruBox.checked); };
+ruBox.onchange = applyRu; applyRu();
+view.addEventListener('click', e => { const r = e.target.closest('.peekable'); if(r && !ruBox.checked) r.querySelectorAll('.ru').forEach(x=>x.classList.toggle('peek')); });
+
+// ---- question card
+function qHead(q, label){
+  return `<div class="meta"><span>${label}</span><span>${q.seen_in.join(', ')}</span></div>
+    ${q.multi ? '<span class="badge">несколько ответов · varias respuestas</span>' : ''}
+    <div class="peekable"><div class="q-es">${esc(q.es)}</div><div class="ru">${esc(q.ru)}</div></div>
+    ${q.img && IMG[q.img] ? `<img class="img" alt="" src="${IMG[q.img]}">` : ''}`;
+}
+function optHTML(o, i, cls, tag){
+  return `<button class="opt ${cls}" data-i="${i}"><span class="k">${'ABCD'[i]}</span>
+    <span class="peekable"><span>${esc(o.es)}</span><span class="ru">${esc(o.ru)}</span></span>
+    ${tag ? `<span class="tag">${tag}</span>` : ''}</button>`;
+}
+// fix: .ru inside options must respect hide-ru
+
+// Ask one question; resolves with true/false after the user answers.
+function ask(q, label, {reveal = true, onDone}){
+  const order = shuffle(q.opts.map((_, i) => i));
+  const opts = order.map(i => q.opts[i]);
+  let picked = new Set(), done = false;
+  const render = () => {
+    view.innerHTML = `<div class="card">${qHead(q, label)}<div class="opts">${
+      opts.map((o, i) => {
+        if(!done) return optHTML(o, i, picked.has(i) ? 'sel' : '', '');
+        if(!reveal) return optHTML(o, i, picked.has(i) ? 'sel' : '', '');
+        if(o.ok && picked.has(i)) return optHTML(o, i, 'ok', '✓ верно');
+        if(o.ok) return optHTML(o, i, 'miss', '✓ правильный');
+        if(picked.has(i)) return optHTML(o, i, 'bad', '✗');
+        return optHTML(o, i, '', '');
+      }).join('')}</div>
+      <div class="row">${!done && q.multi ? '<button class="primary" id="check">Проверить</button>' : ''}
+        <span class="spacer"></span>${done ? '<button class="primary" id="next">Дальше →</button>' : ''}</div></div>`;
+    view.querySelectorAll('.opt').forEach(b => b.onclick = e => {
+      if(done) return;
+      const i = +b.dataset.i;
+      if(q.multi){ picked.has(i) ? picked.delete(i) : picked.add(i); render(); }
+      else { picked = new Set([i]); finish(); }
+    });
+    const c = $('#check'); if(c) c.onclick = () => picked.size && finish();
+    const n = $('#next'); if(n){ n.onclick = () => { onDone(result); window.scrollTo(0, 0); }; n.focus({preventScroll: true}); }
+  };
+  let result;
+  const finish = () => {
+    done = true;
+    result = opts.every((o, i) => o.ok === picked.has(i));
+    render();
+    if(!reveal) onDone(result);
+  };
+  render();
+}
+
+function record(q, ok){
+  const p = P[q.id] || {right:0, wrong:0};
+  ok ? p.right++ : p.wrong++; p.last = ok; P[q.id] = p; save(); updStat();
+}
+
+// ---- modes
+function train(pool, title){
+  if(!pool.length){ view.innerHTML = `<div class="card">Здесь пусто — ошибок нет. 🎉</div>`; return; }
+  // unseen first, then wrong, then the rest
+  const w = q => !P[q.id] ? 0 : P[q.id].last === false ? 1 : 2;
+  const deck = shuffle(pool).sort((a, b) => w(a) - w(b));
+  let i = 0, right = 0;
+  const step = () => {
+    if(i >= deck.length){ view.innerHTML = `<div class="card"><div class="big">${right}/${deck.length}</div><p class="muted">Круг пройден.</p><button class="primary" id="again">Ещё круг</button></div>`; $('#again').onclick = () => train(pool, title); return; }
+    const q = deck[i];
+    ask(q, `${title} · ${i + 1}/${deck.length}`, {onDone: ok => { if(ok) right++; i++; step(); }});
+  };
+  step();
+}
+// wrap ask to record progress in train/mistakes
+const _ask = ask;
+ask = function(q, label, o){ return _ask(q, label, {...o, onDone: ok => { if(!o.noRecord) record(q, ok); o.onDone(ok); }}); };
+
+function exam(){
+  const deck = shuffle(Q).slice(0, Math.min(35, Q.length));
+  const answers = [];
+  const t0 = Date.now(), LIMIT = 45 * 60 * 1000;
+  let i = 0;
+  const step = () => {
+    const left = LIMIT - (Date.now() - t0);
+    if(i >= deck.length || left <= 0) return results();
+    const mm = Math.max(0, Math.floor(left / 60000));
+    ask(deck[i], `Экзамен · ${i + 1}/${deck.length} · осталось ~${mm} мин`, {onDone: ok => { answers.push(ok); i++; step(); }});
+  };
+  const results = () => {
+    const n = answers.filter(Boolean).length;
+    const pct = Math.round(n / deck.length * 100);
+    view.innerHTML = `<div class="card"><div class="big">${n}/${deck.length} · ${pct}%</div>
+      <p class="muted">${pct >= 87 ? 'Хороший результат.' : 'Пока ниже уровня сдачи.'} Порог на реальном экзамене — около 33 из 38 баллов (3 вопроса идут за 2 балла); уточни в муниципалитете.</p>
+      <div class="row"><button class="primary" id="again">Новый экзамен</button><button id="rev">Разбор ошибок</button></div></div>`;
+    $('#again').onclick = exam;
+    $('#rev').onclick = () => train(deck.filter((q, k) => answers[k] === false), 'Разбор');
+  };
+  step();
+}
+
+function list(){
+  const draw = (f = '') => {
+    const t = f.trim().toLowerCase();
+    const items = Q.filter(q => !t || (q.es + ' ' + q.ru + ' ' + q.opts.map(o => o.es + ' ' + o.ru).join(' ')).toLowerCase().includes(t));
+    $('#cards').innerHTML = items.map(q => `<div class="card">${qHead(q, P[q.id] ? (P[q.id].last ? '✓ знаю' : '✗ ошибка') : 'новый')}
+      <div class="opts">${q.opts.map((o, i) => optHTML(o, i, o.ok ? 'ok' : '', o.ok ? '✓' : '')).join('')}</div></div>`).join('')
+      || '<p class="muted">Ничего не найдено.</p>';
+  };
+  view.innerHTML = `<input type="search" id="find" placeholder="Поиск по-испански или по-русски…"><div id="cards"></div>`;
+  $('#find').oninput = e => draw(e.target.value);
+  draw();
+}
+
+const modes = {
+  train: () => train(Q, 'Тренировка'),
+  mistakes: () => train(Q.filter(q => P[q.id] && P[q.id].last === false), 'Ошибки'),
+  exam, list
+};
+document.querySelectorAll('nav .tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav .tab').forEach(x => x.setAttribute('aria-pressed', x === b));
+  store.set('cb_mode', b.dataset.mode);
+  modes[b.dataset.mode]();
+  window.scrollTo(0, 0);
+});
+document.addEventListener('keydown', e => {
+  if(e.target.tagName === 'INPUT') return;
+  const n = '1234'.indexOf(e.key); const bs = view.querySelectorAll('.opt');
+  if(n >= 0 && bs[n]) bs[n].click();
+  if(e.key === 'Enter'){ const b = $('#next') || $('#check'); if(b) b.click(); }
+});
+updStat();
+const start = store.get('cb_mode', 'train');
+(document.querySelector(`nav .tab[data-mode="${start}"]`) || document.querySelector('nav .tab')).click();
+}
+
+(async () => {
+  const ITER = 200000;
+  const view = document.getElementById('view');
+  const hidden = [document.querySelector('nav'), document.querySelector('.base')];
+  hidden.forEach(x => x.style.visibility = 'hidden');
+  const get = k => { try { return localStorage.getItem(k); } catch(e) { return null; } };
+  const put = (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} };
+  async function decrypt(buf, pw){
+    const salt = buf.slice(0, 16), iv = buf.slice(16, 28), ct = buf.slice(28);
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey({name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256'},
+      base, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
+    return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, key, ct)));
+  }
+  view.innerHTML = '<div class="card muted">Загрузка…</div>';
+  let buf;
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=7a8288d8b8')).arrayBuffer()); }
+  catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
+  const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img); };
+  const saved = get('cb_pw');
+  if (saved) { try { return run(await decrypt(buf, saved)); } catch(e) {} }
+  view.innerHTML = `<form class="card" id="lock">
+      <p style="margin-top:0"><b>Введите пароль</b></p>
+      <input type="password" id="pw" autocomplete="current-password" style="font:inherit;width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)">
+      <p class="muted" id="msg" style="min-height:1.4em"></p>
+      <button class="primary" type="submit">Открыть</button></form>`;
+  const pw = document.getElementById('pw'); pw.focus();
+  document.getElementById('lock').onsubmit = async e => {
+    e.preventDefault();
+    document.getElementById('msg').textContent = 'Проверяю…';
+    try { const d = await decrypt(buf, pw.value); put('cb_pw', pw.value); run(d); }
+    catch(err) { document.getElementById('msg').textContent = 'Неверный пароль'; pw.select(); }
+  };
+})();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+</script>
+</body>
+</html>

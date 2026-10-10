@@ -65,6 +65,7 @@ button:disabled{opacity:.5;cursor:default}
 .big{font-size:28px;font-weight:700}
 .muted{color:var(--muted)}
 input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:12px}
+select#chSel{font:inherit;font-size:14px;padding:7px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
 label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
 </style>
 <meta name="robots" content="noindex,nofollow">
@@ -92,12 +93,15 @@ label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font
     <button class="tab" data-mode="exam">Экзамен 35</button>
     <button class="tab" data-mode="list">Все вопросы</button>
     <span class="spacer"></span>
+    <select id="chSel" aria-label="Глава"></select>
     <label class="chk"><input type="checkbox" id="ruToggle" checked> русский</label>
   </nav>
   <main id="view"></main>
 </div>
 <script>
-function startApp(Q, IMG){
+function startApp(ALL, IMG, CH){
+CH = CH || {};
+let Q = ALL;            // questions of the chosen chapter (all by default)
 const TOTAL = 1500;   // questions practicatest says it has for Clase B
 
 const store = {
@@ -117,9 +121,9 @@ function updStat(){
   const learned = Q.filter(q => P[q.id] && P[q.id].last === true).length;
   const wrong = Q.filter(q => P[q.id] && P[q.id].last === false).length;
   $('#stat').textContent = `верно: ${learned}/${Q.length} · ошибки: ${wrong}`;
-  $('#baseN').textContent = Q.length;
+  $('#baseN').textContent = ALL.length;
   $('#baseT').textContent = TOTAL;
-  $('#baseBar').style.width = Math.min(100, Q.length / TOTAL * 100) + '%';
+  $('#baseBar').style.width = Math.min(100, ALL.length / TOTAL * 100) + '%';
 }
 
 // ---- language toggle
@@ -127,6 +131,22 @@ const ruBox = $('#ruToggle');
 ruBox.checked = store.get('cb_ru', true);
 const applyRu = () => { document.body.classList.toggle('hide-ru', !ruBox.checked); store.set('cb_ru', ruBox.checked); };
 ruBox.onchange = applyRu; applyRu();
+
+// ---- chapter filter
+const chSel = $('#chSel');
+const count = c => ALL.filter(q => String(q.ch) === String(c)).length;
+chSel.innerHTML = `<option value="">Все главы (${ALL.length})</option>` +
+  Object.keys(CH).sort((a, b) => a - b).map(c => `<option value="${c}">${c}. ${esc(CH[c])} (${count(c)})</option>`).join('') +
+  (ALL.some(q => !q.ch) ? `<option value="none">Без главы — экзамены (${ALL.filter(q => !q.ch).length})</option>` : '');
+const applyCh = () => {
+  const v = chSel.value;
+  Q = !v ? ALL : v === 'none' ? ALL.filter(q => !q.ch) : ALL.filter(q => String(q.ch) === v);
+  store.set('cb_ch', v); updStat();
+};
+chSel.value = store.get('cb_ch', '');
+if (chSel.selectedIndex < 0) chSel.value = '';
+applyCh();
+chSel.onchange = () => { applyCh(); const t = document.querySelector('nav .tab[aria-pressed="true"]'); if (t) t.click(); };
 view.addEventListener('click', e => { const r = e.target.closest('.peekable'); if(r && !ruBox.checked) r.querySelectorAll('.ru').forEach(x=>x.classList.toggle('peek')); });
 
 // ---- question card
@@ -279,9 +299,9 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=dbbbd8584f')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=f1c17df7d0')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
-  const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img); };
+  const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch); };
   const saved = get('cb_pw');
   if (saved) { try { return run(await decrypt(buf, saved)); } catch(e) {} }
   view.innerHTML = `<form class="card" id="lock">

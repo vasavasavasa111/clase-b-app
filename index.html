@@ -299,7 +299,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=df74223389')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=1786e110ee')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch); };
   const saved = get('cb_pw');

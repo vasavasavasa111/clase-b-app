@@ -154,7 +154,22 @@ function qHead(q, label){
   return `<div class="meta"><span>${label}</span><span>${q.seen_in.join(', ')}</span></div>
     ${q.multi ? '<span class="badge">несколько ответов · varias respuestas</span>' : ''}
     <div class="peekable"><div class="q-es">${esc(q.es)}</div><div class="ru">${esc(q.ru)}</div></div>
-    ${q.img && IMG[q.img] ? `<img class="img" alt="" src="${IMG[q.img]}">` : ''}`;
+    ${q.img && IMG[q.img] ? imgTag(IMG[q.img]) : ''}`;
+}
+// photos are inline data: URLs in the single-file build; the web app passes file paths
+// and a loader (window.loadImg) that fetches and decrypts a photo once it is on screen
+function imgTag(src){
+  return src.startsWith('data:') ? `<img class="img" alt="" src="${src}">` : `<img class="img" alt="" data-img="${src}">`;
+}
+if (window.loadImg) {
+  const seen = new IntersectionObserver(es => es.forEach(e => {
+    if (!e.isIntersecting) return;
+    seen.unobserve(e.target);
+    window.loadImg(e.target.dataset.img).then(u => { e.target.src = u; }).catch(() => {});
+  }), {rootMargin: '400px'});
+  new MutationObserver(() => view.querySelectorAll('img[data-img]:not([data-w])').forEach(im => {
+    im.dataset.w = 1; seen.observe(im);
+  })).observe(view, {childList: true, subtree: true});
 }
 function optHTML(o, i, cls, tag){
   return `<button class="opt ${cls}" data-i="${i}"><span class="k">${'ABCD'[i]}</span>
@@ -295,13 +310,33 @@ const start = store.get('cb_mode', 'train');
     const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
     const key = await crypto.subtle.deriveKey({name: 'PBKDF2', salt, iterations: ITER, hash: 'SHA-256'},
       base, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
-    return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, key, ct)));
+    const d = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, key, ct)));
+    d.key = key; return d;
+  }
+  // photos: img/<hash>.bin = iv(12) + AES-GCM(jpeg), same key as data.enc
+  function photos(key){
+    const urls = new Map();
+    window.loadImg = path => {
+      if (!urls.has(path)) urls.set(path, fetch(path).then(r => { if (!r.ok) throw r.status; return r.arrayBuffer(); })
+        .then(b => crypto.subtle.decrypt({name: 'AES-GCM', iv: b.slice(0, 12)}, key, b.slice(12)))
+        .then(p => URL.createObjectURL(new Blob([p], {type: 'image/jpeg'})))
+        .catch(e => { urls.delete(path); throw e; }));
+      return urls.get(path);
+    };
+  }
+  // keep every photo available offline: fetch them quietly in the background (the service worker caches them)
+  function prefetch(paths){
+    if (!navigator.onLine) return;
+    let i = 0;
+    const next = () => { if (i < paths.length) fetch(paths[i++]).catch(() => {}).finally(next); };
+    setTimeout(() => { for (let k = 0; k < 4; k++) next(); }, 3000);
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=bbe21e4c8c')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=104ef6d5c0')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
-  const run = d => { hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch); };
+  const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);
+    prefetch([...new Set(Object.values(d.img))]); };
   const saved = get('cb_pw');
   if (saved) { try { return run(await decrypt(buf, saved)); } catch(e) {} }
   view.innerHTML = `<form class="card" id="lock">

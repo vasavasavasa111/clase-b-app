@@ -333,7 +333,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=acc783bbf6')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=21cfe711fc')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);
     prefetch([...new Set(Object.values(d.img))]); };

@@ -71,6 +71,7 @@ label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font
 body.dragging .drop,body.dragging #view{outline:3px dashed var(--accent);outline-offset:4px}
 .paste{min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--muted);margin-top:10px;background:var(--bg)}
 .filebtn{display:inline-block;cursor:pointer;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);font-weight:600;padding:8px 12px}
+.filebtn.alt{background:var(--card);color:var(--ink);border-color:var(--line);font-weight:400}
 .shot{display:block;max-width:100%;max-height:260px;margin:0 auto 8px;border-radius:8px}
 textarea.ocr{font:13px/1.4 ui-monospace,monospace;width:100%;min-height:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .hit{font-weight:700;margin:4px 0 10px}
@@ -306,6 +307,42 @@ function findMatches(text, n = 5){
     return {q: e.q, f: 0.6 * cq + 0.4 * co, s: 0.45 * cq + 0.3 * co + 0.25 * r};
   }).sort((a, b) => b.s - a.s).slice(0, n);
 }
+function loadImage(blob){
+  return new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = URL.createObjectURL(blob); });
+}
+// a phone photo (4000 px and more) is read at 2000 px: faster, and the scaling also averages out
+// the moire stripes of a photographed screen
+async function scaledShot(file){
+  const im = await loadImage(file), long = Math.max(im.width, im.height);
+  if (long <= 2600) return file;
+  const k = 2000 / long, c = document.createElement('canvas');
+  c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(im, 0, 0, c.width, c.height);
+  return new Promise(ok => c.toBlob(ok, 'image/png'));
+}
+// flat-field grey copy: each pixel divided by the local background (glare, a dark corner, uneven
+// light of a photographed screen), then stretched between the 1st and 99th percentile
+async function flatField(blob){
+  const im = await loadImage(blob), w = im.width, h = im.height;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+  const d = g.getImageData(0, 0, w, h), px = d.data;
+  // background: shrunk to 1/40 and stretched back - a wide blur that works in every browser
+  const s = document.createElement('canvas'); s.width = Math.max(1, Math.round(w / 40)); s.height = Math.max(1, Math.round(h / 40));
+  const sg = s.getContext('2d'); sg.imageSmoothingQuality = 'high'; sg.drawImage(im, 0, 0, s.width, s.height);
+  const b = document.createElement('canvas'); b.width = w; b.height = h;
+  const bg = b.getContext('2d'); bg.imageSmoothingQuality = 'high'; bg.drawImage(s, 0, 0, w, h);
+  const back = bg.getImageData(0, 0, w, h).data, n = w * h, v = new Float32Array(n), hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) {
+    const y = (px[4*i] * 77 + px[4*i+1] * 150 + px[4*i+2] * 29) >> 8, yb = (back[4*i] * 77 + back[4*i+1] * 150 + back[4*i+2] * 29) >> 8;
+    v[i] = Math.min(255, y / (yb + 1) * 200); hist[v[i] | 0]++;
+  }
+  let lo = 0, hi = 255, acc = 0;
+  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc < n * 0.01) lo = i; if (acc <= n * 0.99) hi = i; }
+  for (let i = 0; i < n; i++) px[4*i] = px[4*i+1] = px[4*i+2] = Math.max(0, Math.min(255, (v[i] - lo) / Math.max(1, hi - lo) * 255));
+  g.putImageData(d, 0, 0);
+  return new Promise(ok => c.toBlob(ok, 'image/png'));
+}
 // histogram-equalized grey copy: brings out text dimmed under a page overlay
 function equalized(file){
   return new Promise((ok, no) => { const im = new Image(); im.onload = () => {
@@ -367,16 +404,19 @@ async function readShot(file){
   shot = {file, url: URL.createObjectURL(file), text: '', passes: []};
   const out = $('#shotOut');
   out.innerHTML = `<div class="card"><img class="shot" alt="" src="${shot.url}"><p class="muted" id="ocrMsg">Распознаю текст…</p></div>`;
+  out.scrollIntoView({behavior: 'smooth', block: 'start'});   // on a phone the result is below the buttons
   ocrProgress = m => { const el = $('#ocrMsg'); if (!el) return;
     el.textContent = m.status === 'recognizing text' ? `Распознаю текст… ${Math.round(m.progress * 100)}%` : 'Загружаю распознавание (первый раз дольше)…'; };
   try {
-    const w = await getOcr();
-    shot.text = (await w.recognize(file)).data.text; shot.passes = [shot.text];
-    // nothing certain: read it once more with stronger contrast and use both readings
-    if (!(findMatches(shot.text, 1)[0].f >= 0.72)) {
-      ocrProgress = m => { const el = $('#ocrMsg'); if (el && m.status === 'recognizing text') el.textContent = `Ещё раз, с усиленным контрастом… ${Math.round(m.progress * 100)}%`; };
-      const t2 = (await w.recognize(await equalized(file))).data.text;
-      shot.passes.push(t2); shot.text += '\n' + t2;
+    const w = await getOcr(), src = await scaledShot(file);
+    shot.text = (await w.recognize(src)).data.text; shot.passes = [shot.text];
+    // nothing certain: read it again - evened-out light (glare, photo of a screen), then stronger
+    // contrast (text dimmed under an overlay) - and match on all readings together
+    for (const [prep, msg] of [[flatField, 'с выравниванием освещения'], [equalized, 'с усиленным контрастом']]) {
+      if (findMatches(shot.text, 1)[0].f >= 0.72) break;
+      ocrProgress = m => { const el = $('#ocrMsg'); if (el && m.status === 'recognizing text') el.textContent = `Ещё раз, ${msg}… ${Math.round(m.progress * 100)}%`; };
+      const t = (await w.recognize(await prep(src))).data.text;
+      shot.passes.push(t); shot.text += '\n' + t;
     }
   }
   catch (e) { shot.text = ''; out.innerHTML = `<div class="card">Не удалось распознать текст: ${esc(String(e.message || e))}. Можно спросить ИИ — он прочтёт картинку сам.</div>`; }
@@ -476,11 +516,15 @@ async function askAi(){
 function photo(){
   view.innerHTML = `<div class="card drop">
       <div class="q-es">Скриншот билета</div>
-      <p class="muted">Вставьте скриншот <b>Ctrl+V</b> в любом месте, перетащите файл в окно или выберите его.</p>
-      <label class="filebtn">Выбрать файл<input type="file" id="shotFile" accept="image/*" hidden></label>
+      <p class="muted">Вставьте скриншот <b>Ctrl+V</b> в любом месте, перетащите файл в окно, выберите его — или сфотографируйте экран с вопросом.</p>
+      <div class="row" style="justify-content:center;margin-top:0">
+        <label class="filebtn">📷 Сфотографировать экран<input type="file" id="shotCam" accept="image/*" capture="environment" hidden></label>
+        <label class="filebtn alt">Выбрать файл<input type="file" id="shotFile" accept="image/*" hidden></label></div>
+      <p class="muted" style="font-size:13px">Фото: вопрос и все варианты целиком в кадре, без бликов, телефон ровно напротив экрана.</p>
       <div class="paste" id="pasteBox" contenteditable="true">На телефоне: нажмите сюда и выберите «Вставить»</div>
     </div><div id="shotOut"></div>`;
-  $('#shotFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) readShot(f); };   // reset: the same file again still triggers
+  for (const id of ['#shotFile', '#shotCam'])   // reset after reading: the same file again still triggers
+    $(id).onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) readShot(f); };
   $('#pasteBox').oninput = () => { $('#pasteBox').textContent = 'На телефоне: нажмите сюда и выберите «Вставить»'; };
   if (shot) showShot();
 }
@@ -556,7 +600,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=ce7b176c94')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=a8e8f3d499')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

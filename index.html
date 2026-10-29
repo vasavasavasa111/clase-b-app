@@ -67,6 +67,15 @@ button:disabled{opacity:.5;cursor:default}
 input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:12px}
 select#chSel{font:inherit;font-size:14px;padding:7px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
 label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
+.drop{border:2px dashed var(--line);text-align:center}
+body.dragging .drop,body.dragging #view{outline:3px dashed var(--accent);outline-offset:4px}
+.paste{min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--muted);margin-top:10px;background:var(--bg)}
+.filebtn{display:inline-block;cursor:pointer;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);font-weight:600;padding:8px 12px}
+.shot{display:block;max-width:100%;max-height:260px;margin:0 auto 8px;border-radius:8px}
+textarea.ocr{font:13px/1.4 ui-monospace,monospace;width:100%;min-height:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.hit{font-weight:700;margin:4px 0 10px}
+.hit.good{color:var(--ok)} .hit.maybe{color:var(--miss)} .hit.none{color:var(--bad)}
+input.key{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin:8px 0}
 </style>
 <meta name="robots" content="noindex,nofollow">
 <meta name="theme-color" content="#2563eb">
@@ -92,6 +101,7 @@ label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font
     <button class="tab" data-mode="mistakes">Ошибки</button>
     <button class="tab" data-mode="exam">Экзамен 35</button>
     <button class="tab" data-mode="list">Все вопросы</button>
+    <button class="tab" data-mode="photo">По фото</button>
     <span class="spacer"></span>
     <select id="chSel" aria-label="Глава"></select>
     <label class="chk"><input type="checkbox" id="ruToggle" checked> русский</label>
@@ -276,10 +286,201 @@ function list(){
   draw();
 }
 
+// ---- photo: a screenshot of a question -> the question in the base with its answer;
+// a question that is not in the base goes to Claude (with the user's own API key)
+// OCR reads roman numerals as 1/l (I, II, III -> 1, 11, Ill): such words are compared as roman numerals
+const normT = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+  .split(' ').map(w => /^[ivxl1]+$/.test(w) ? w.replace(/[l1]/g, 'i') : w).join(' ');
+const tri = s => { const t = ' ' + normT(s) + ' ', r = new Set(); for (let i = 0; i + 3 <= t.length; i++) r.add(t.slice(i, i + 3)); return r; };
+// f: share of a question's letter trigrams found in the screenshot text - extra text around it
+// (site menus, buttons) does not lower it, and the options tell look-alike questions apart; shown as
+// the match %. Ranking also counts how much of the screenshot the question explains, so a short
+// question whose words happen to appear inside a long one does not win.
+const hits = (a, b) => { let n = 0; a.forEach(x => { if (b.has(x)) n++; }); return n; };
+let index = null;
+function findMatches(text, n = 5){
+  index = index || ALL.map(q => { const tq = tri(q.es), to = tri(q.opts.map(o => o.es).join(' ')); return {q, tq, to, all: new Set([...tq, ...to])}; });
+  const t = tri(text);
+  return index.map(e => {
+    const cq = hits(e.tq, t) / (e.tq.size || 1), co = e.to.size ? hits(e.to, t) / e.to.size : 0, r = hits(e.all, t) / (t.size || 1);
+    return {q: e.q, f: 0.6 * cq + 0.4 * co, s: 0.45 * cq + 0.3 * co + 0.25 * r};
+  }).sort((a, b) => b.s - a.s).slice(0, n);
+}
+// histogram-equalized grey copy: brings out text dimmed under a page overlay
+function equalized(file){
+  return new Promise((ok, no) => { const im = new Image(); im.onload = () => {
+    const c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
+    const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height), px = d.data, h = new Array(256).fill(0), y = new Uint8Array(px.length / 4);
+    for (let i = 0; i < y.length; i++) { y[i] = (px[4*i] * 77 + px[4*i+1] * 150 + px[4*i+2] * 29) >> 8; h[y[i]]++; }
+    const cdf = []; h.reduce((a, v, i) => (cdf[i] = a + v), 0);
+    const lo = cdf.find(v => v > 0), map = cdf.map(v => Math.round((v - lo) / Math.max(1, y.length - lo) * 255));
+    for (let i = 0; i < y.length; i++) px[4*i] = px[4*i+1] = px[4*i+2] = map[y[i]];
+    g.putImageData(d, 0, 0); c.toBlob(ok, 'image/png'); }; im.onerror = no; im.src = URL.createObjectURL(file); });
+}
+function answerCard(q, label){
+  return `<div class="card">${qHead(q, label)}<div class="opts">${q.opts.map((o, i) => optHTML(o, i, o.ok ? 'ok' : '', o.ok ? '✓' : '')).join('')}</div></div>`;
+}
+function loadScript(src){
+  return new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('не загрузился ' + src)); document.head.appendChild(s); });
+}
+// OCR runs on the device (tesseract.js, Spanish); the web app serves it itself, so it works offline
+let ocr = null, ocrProgress = () => {};
+function getOcr(){
+  if (!ocr) ocr = (async () => {
+    const base = window.OCR_BASE ? new URL(window.OCR_BASE, location.href).href : 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/';
+    if (!window.Tesseract) await loadScript(base + 'tesseract.min.js');
+    const opts = {logger: m => ocrProgress(m)};
+    if (window.OCR_BASE) Object.assign(opts, {workerPath: base + 'worker.min.js', corePath: base + 'core', langPath: base + 'lang'});
+    return Tesseract.createWorker('spa', 1, opts);
+  })().catch(e => { ocr = null; throw e; });
+  return ocr;
+}
+let shot = null;   // {file, url, text}
+function openShot(file){
+  if (store.get('cb_mode', '') !== 'photo') document.querySelector('nav .tab[data-mode="photo"]').click();
+  readShot(file);
+}
+async function readShot(file){
+  if (shot) URL.revokeObjectURL(shot.url);
+  shot = {file, url: URL.createObjectURL(file), text: ''};
+  const out = $('#shotOut');
+  out.innerHTML = `<div class="card"><img class="shot" alt="" src="${shot.url}"><p class="muted" id="ocrMsg">Распознаю текст…</p></div>`;
+  ocrProgress = m => { const el = $('#ocrMsg'); if (!el) return;
+    el.textContent = m.status === 'recognizing text' ? `Распознаю текст… ${Math.round(m.progress * 100)}%` : 'Загружаю распознавание (первый раз дольше)…'; };
+  try {
+    const w = await getOcr();
+    shot.text = (await w.recognize(file)).data.text;
+    // nothing certain: read it once more with stronger contrast and use both readings
+    if (!(findMatches(shot.text, 1)[0].f >= 0.72)) {
+      ocrProgress = m => { const el = $('#ocrMsg'); if (el && m.status === 'recognizing text') el.textContent = `Ещё раз, с усиленным контрастом… ${Math.round(m.progress * 100)}%`; };
+      shot.text += '\n' + (await w.recognize(await equalized(file))).data.text;
+    }
+  }
+  catch (e) { shot.text = ''; out.innerHTML = `<div class="card">Не удалось распознать текст: ${esc(String(e.message || e))}. Можно спросить ИИ — он прочтёт картинку сам.</div>`; }
+  showShot();
+}
+function showShot(){
+  const m = findMatches(shot.text), best = m.length ? m[0].f : 0, pct = s => Math.round(s * 100) + '%';
+  const near = m.filter(x => x.s >= m[0].s - 0.06 && x.f >= 0.45);
+  let html = `<div class="card"><img class="shot" alt="" src="${shot.url}">
+    <details><summary class="muted">Распознанный текст (можно исправить)</summary>
+    <textarea class="ocr" id="ocrText">${esc(shot.text)}</textarea><div class="row"><button id="reFind">Искать снова</button></div></details></div>`;
+  const ai = `<div class="row"><button class="primary" id="askAi">Спросить ИИ (Claude)</button><span class="spacer"></span><button id="aiKey">Ключ ИИ</button></div><div id="aiOut"></div>`;
+  if (shot.text && best >= 0.72) {
+    html += `<div class="hit good">✓ Найдено в базе · совпадение ${pct(best)}</div>` + answerCard(m[0].q, 'из базы');
+    if (near.length > 1) html += `<p class="muted">Похожие вопросы — если картинка другая, сверьте:</p>` + near.slice(1).map(x => answerCard(x.q, 'похож · ' + pct(x.f))).join('');
+    html += ai;
+  } else if (shot.text && best >= 0.45) {
+    // the AI's answer comes first; the look-alikes from the base follow for comparison
+    html += `<div class="hit maybe">≈ Точного совпадения в базе нет</div>` + ai +
+      `<p class="muted">Похожие вопросы из базы — сверьте с вашим скриншотом:</p>` + m.slice(0, 3).map(x => answerCard(x.q, 'похож · ' + pct(x.f))).join('');
+  } else {
+    html += `<div class="hit none">✗ В базе такого вопроса нет</div>` + ai;
+  }
+  $('#shotOut').innerHTML = html;
+  $('#reFind').onclick = () => { shot.text = $('#ocrText').value; showShot(); };
+  $('#askAi').onclick = askAi;
+  $('#aiKey').onclick = () => aiKeyForm(false);
+  if (!(shot.text && best >= 0.72) && store.get('cb_api_key', '')) askAi();
+}
+function aiKeyForm(thenAsk){
+  $('#aiOut').innerHTML = `<div class="card"><b>Ключ Claude API</b>
+    <p class="muted">Нужен только для вопросов, которых нет в базе. Хранится лишь на этом устройстве. Создать: console.anthropic.com → API Keys; там же поставьте месячный лимит расходов. Один вопрос стоит примерно 5 центов.</p>
+    <p class="muted">Без ключа: отправьте этот же скриншот в ваш проект Claude «Права Clase B» — там ответ по подписке, с той же базой.</p>
+    <input class="key" id="keyIn" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(store.get('cb_api_key', ''))}">
+    <div class="row"><button class="primary" id="keySave">Сохранить</button><button id="keyDel">Удалить ключ</button></div></div>`;
+  $('#keySave').onclick = () => { store.set('cb_api_key', $('#keyIn').value.trim()); if (thenAsk && store.get('cb_api_key', '')) askAi(); else $('#aiOut').innerHTML = '<p class="muted">Ключ сохранён.</p>'; };
+  $('#keyDel').onclick = () => { store.set('cb_api_key', ''); $('#aiOut').innerHTML = '<p class="muted">Ключ удалён с устройства.</p>'; };
+}
+const AI_MODEL = 'claude-opus-5-5';
+const AI_SYSTEM = `You help a Russian-speaking student prepare for the Chilean Clase B driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor"). You get a screenshot of one practice question in Spanish, its OCR text, and the closest questions from the student's database, whose marked answers are verified against the official practice site.
+Read the question and every answer option from the image exactly as written; the OCR text can contain errors, the image is authoritative. If a database question is the same question (same meaning and the same options, even if the picture or the order of options differs), set matched_id to its id and mark as correct the options that correspond to its ✓ answers. Otherwise answer from Chilean traffic law and the official manual and set matched_id to an empty string. Some questions have more than one correct option.
+List the options in the order of the screenshot, with the letters shown there (A, B, C... if none). question_ru, text_ru and explanation_ru are in Russian; the explanation is 1-3 short sentences naming the rule. confidence is high when matched or certain from the law, otherwise medium or low.`;
+const AI_SCHEMA = {type: 'object', additionalProperties: false,
+  required: ['question_es', 'question_ru', 'options', 'matched_id', 'explanation_ru', 'confidence'],
+  properties: {question_es: {type: 'string'}, question_ru: {type: 'string'},
+    options: {type: 'array', items: {type: 'object', additionalProperties: false, required: ['letter', 'text_es', 'text_ru', 'correct'],
+      properties: {letter: {type: 'string'}, text_es: {type: 'string'}, text_ru: {type: 'string'}, correct: {type: 'boolean'}}}},
+    matched_id: {type: 'string'}, explanation_ru: {type: 'string'}, confidence: {type: 'string', enum: ['high', 'medium', 'low']}}};
+function shotJpeg(file){   // base64 JPEG, long side at most 1600 px
+  return new Promise((ok, no) => { const im = new Image(); im.onload = () => {
+    const k = Math.min(1, 1600 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+    c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+    ok(c.toDataURL('image/jpeg', 0.9).split(',')[1]); }; im.onerror = no; im.src = shot.url; });
+}
+let sdk = null;
+async function askAi(){
+  const key = store.get('cb_api_key', '');
+  if (!key) return aiKeyForm(true);
+  if (!window.SDK_URL) { $('#aiOut').innerHTML = '<div class="card">ИИ работает в веб-версии приложения.</div>'; return; }
+  const out = $('#aiOut'); $('#askAi').disabled = true;
+  out.innerHTML = '<div class="card muted">Спрашиваю Claude… обычно 10–40 секунд</div>';
+  try {
+    sdk = sdk || await import(new URL(window.SDK_URL, location.href).href);
+    const client = new sdk.Anthropic({apiKey: key, dangerouslyAllowBrowser: true});
+    const ref = findMatches(shot.text).map(({q}) => `[${q.id}] ${q.es}\n` +
+      q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
+    const msg = await client.beta.messages.parse({
+      model: AI_MODEL, max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+      output_config: {effort: 'high', format: sdk.betaJSONSchemaOutputFormat(AI_SCHEMA)},
+      system: AI_SYSTEM,
+      messages: [{role: 'user', content: [
+        {type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: await shotJpeg(shot.file)}},
+        {type: 'text', text: `OCR text of the screenshot:\n${shot.text || '(not recognized)'}\n\nClosest questions in the database:\n\n${ref}`}]}]
+    });
+    if (msg.stop_reason === 'refusal') throw new Error('модель отказалась отвечать на этот запрос');
+    const r = msg.parsed_output;
+    if (!r) throw new Error('не удалось разобрать ответ модели');
+    const db = r.matched_id && ALL.find(q => q.id === r.matched_id);
+    out.innerHTML = `<div class="hit ${r.confidence === 'high' ? 'good' : 'maybe'}">Ответ ИИ · уверенность: ${{high: 'высокая', medium: 'средняя', low: 'низкая'}[r.confidence]}${db ? ' · вопрос найден в базе: ' + db.id : ' · вопроса нет в базе'}</div>
+      <div class="card"><div class="peekable"><div class="q-es">${esc(r.question_es)}</div><div class="ru">${esc(r.question_ru)}</div></div>
+      <div class="opts">${r.options.map(o => `<div class="opt ${o.correct ? 'ok' : ''}"><span class="k">${esc(o.letter)}</span>
+        <span class="peekable"><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span>${o.correct ? '<span class="tag">✓ правильный</span>' : ''}</div>`).join('')}</div>
+      <p>${esc(r.explanation_ru)}</p></div>${db ? answerCard(db, 'в базе') : ''}`;
+  } catch (e) {
+    const A = sdk && sdk.Anthropic;
+    const why = !A ? 'не загрузилась библиотека ИИ — нужен интернет'
+      : e instanceof A.AuthenticationError ? 'ключ не подошёл — проверьте его в «Ключ ИИ»'
+      : e instanceof A.PermissionDeniedError ? 'у ключа нет доступа к модели'
+      : e instanceof A.RateLimitError ? 'превышен лимит запросов — попробуйте через минуту'
+      : e instanceof A.APIConnectionError ? 'нет связи с сервером — проверьте интернет'
+      : e instanceof A.APIError ? `ошибка API ${e.status || ''}: ${e.message}` : String(e.message || e);
+    out.innerHTML = `<div class="card">ИИ не ответил: ${esc(why)}</div>`;
+  } finally { const b = $('#askAi'); if (b) b.disabled = false; }
+}
+function photo(){
+  view.innerHTML = `<div class="card drop">
+      <div class="q-es">Скриншот билета</div>
+      <p class="muted">Вставьте скриншот <b>Ctrl+V</b> в любом месте, перетащите файл в окно или выберите его.</p>
+      <label class="filebtn">Выбрать файл<input type="file" id="shotFile" accept="image/*" hidden></label>
+      <div class="paste" id="pasteBox" contenteditable="true">На телефоне: нажмите сюда и выберите «Вставить»</div>
+    </div><div id="shotOut"></div>`;
+  $('#shotFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) readShot(f); };   // reset: the same file again still triggers
+  $('#pasteBox').oninput = () => { $('#pasteBox').textContent = 'На телефоне: нажмите сюда и выберите «Вставить»'; };
+  if (shot) showShot();
+}
+// a screenshot pasted or dropped anywhere in the app opens it in the photo tab
+document.addEventListener('paste', e => {
+  const it = [...((e.clipboardData && e.clipboardData.items) || [])].find(i => i.kind === 'file' && i.type.startsWith('image/'));
+  if (!it) return;
+  e.preventDefault(); openShot(it.getAsFile());
+});
+document.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); document.body.classList.add('dragging'); } });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+document.addEventListener('drop', e => {
+  document.body.classList.remove('dragging');
+  const f = [...((e.dataTransfer && e.dataTransfer.files) || [])].find(x => x.type.startsWith('image/'));
+  if (!f) return;
+  e.preventDefault(); openShot(f);
+});
+
 const modes = {
   train: () => train(Q, 'Тренировка'),
   mistakes: () => train(Q.filter(q => P[q.id] && P[q.id].last === false), 'Ошибки'),
-  exam, list
+  exam, list, photo
 };
 document.querySelectorAll('nav .tab').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav .tab').forEach(x => x.setAttribute('aria-pressed', x === b));
@@ -288,7 +489,7 @@ document.querySelectorAll('nav .tab').forEach(b => b.onclick = () => {
   window.scrollTo(0, 0);
 });
 document.addEventListener('keydown', e => {
-  if(e.target.tagName === 'INPUT') return;
+  if(['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return;
   const n = '1234'.indexOf(e.key); const bs = view.querySelectorAll('.opt');
   if(n >= 0 && bs[n]) bs[n].click();
   if(e.key === 'Enter'){ const b = $('#next') || $('#check'); if(b) b.click(); }
@@ -333,8 +534,9 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=7daf881fa8')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=812fe4d83a')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
+  window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);
     prefetch([...new Set(Object.values(d.img))]); };
   const saved = get('cb_pw');

@@ -683,7 +683,7 @@ function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after anothe
 // Russian speech voice stay silent with speechSynthesis. The element plays first from a tap (unlockVoice),
 // after that the page may play it any time.
 const voiceEl = new Audio();
-let voiceSeq = 0;
+let voiceSeq = 0, voiceBusy = false, voicePrio = 0;
 const clipUrl = name => window.VOICE_BASE + name + '.mp3';
 function unlockVoice(first = 'silence'){   // -> the play() promise, or null without recorded phrases
   if (!window.VOICE_BASE) return null;
@@ -692,18 +692,25 @@ function unlockVoice(first = 'silence'){   // -> the play() promise, or null wit
   const pr = voiceEl.play(); pr.catch(() => {});
   return pr;
 }
-async function playClips(names){   // one after another; a new call cuts the previous one (returns false then)
-  const my = ++voiceSeq;
-  for (const n of names) {
-    if (my !== voiceSeq) return false;
-    voiceEl.src = clipUrl(n);
-    try { await voiceEl.play(); }
-    catch (e) { if (my !== voiceSeq) return false; throw e; }
-    await new Promise(ok => { voiceEl.onended = voiceEl.onerror = voiceEl.onemptied = ok; });
-  }
-  return true;
+// one after another; a new call cuts the previous one (returns false then) unless that one matters more:
+// prio 2 answers and warnings, 1 hints ("Думаю.", "Камера движется."), 0 the waiting beep - a hint never
+// cuts an answer, the beep plays only into silence
+async function playClips(names, prio = 2){
+  if (voiceBusy && prio < voicePrio) return false;
+  const my = ++voiceSeq; voiceBusy = true; voicePrio = prio;
+  try {
+    for (const n of names) {
+      if (my !== voiceSeq) return false;
+      voiceEl.src = clipUrl(n);
+      try { await voiceEl.play(); }
+      catch (e) { if (my !== voiceSeq) return false; throw e; }
+      await new Promise(ok => { voiceEl.onended = voiceEl.onerror = ok; });
+    }
+    return true;
+  } finally { if (my === voiceSeq) voiceBusy = false; }
 }
-function stopClips(){ voiceSeq++; voiceEl.pause(); }
+function stopClips(){ voiceSeq++; voiceBusy = false; voiceEl.pause(); }
+function cue(name, prio = 1){ if (window.VOICE_BASE) playClips([name], prio).catch(() => {}); }
 function sayClip(name, text){ if (!window.VOICE_BASE) return say([[text, 'ru-RU']]); playClips([name]).catch(() => say([[text, 'ru-RU']])); }
 // the clips for "Вопрос 8. Ответ: второй вариант." - null when a part has no clip (then the speech voice says it)
 function answerClips(number, letters){
@@ -825,9 +832,9 @@ const LIVE_MOVE = 12, LIVE_NEW = 8;
 async function liveAiLoop(L){
   $('#liveStatus').textContent = 'Наведите камеру на вопрос и задержите на секунду…';
   if (window.VOICE_BASE)   // the usual phrases into the offline cache, so the first answers are not late
-    for (const n of ['as', 'and', ...'ABCDE12345'.split('').flatMap(k => ['a-' + k, 'w-' + k]), ...Array.from({length: 40}, (_, i) => 'q' + (i + 1))])
+    for (const n of ['as', 'and', 'think', 'move', 'tick', 'unread', 'err', ...'ABCDE12345'.split('').flatMap(k => ['a-' + k, 'w-' + k]), ...Array.from({length: 40}, (_, i) => 'q' + (i + 1))])
       fetch(clipUrl(n)).catch(() => {});
-  let past = [], moved = false;   // moved: the picture moved clearly since the last request
+  let past = [], moved = false, moving = false, moveSaid = -1e9;   // moved: the picture moved clearly since the last request
   while (L.run) {
     const v = $('#liveVideo');
     if (!v || !v.videoWidth) { await sleep(200); continue; }
@@ -836,9 +843,12 @@ async function liveAiLoop(L){
     const off = L.askedTh ? thumbDiff(L.askedTh, th, 6) : 100;   // how far from the view asked last
     if (window.__liveDebug) window.__liveDebug.push(d.toFixed(0) + '/' + off.toFixed(0));
     if (d > LIVE_MOVE) {
-      moved = true;
+      // heard as well as seen: "Камера движется." once as a movement starts (at most every 2.5 s)
+      if (!moving && past.length > 1 && performance.now() > moveSaid + 2500) { moveSaid = performance.now(); cue('move'); }
+      moved = moving = true;
       if (L.ctrl && off > LIVE_NEW) { L.ctrl.abort(); L.ctrl = null; $('#liveStatus').textContent = 'Камера движется…'; $('#liveBadge').textContent = ''; }   // scrolled on before the answer came
     } else if ((moved || off > LIVE_NEW) && performance.now() > (L.pause || 0)) { moved = false; liveAsk(L, frameOf(v, 2400), th); }
+    if (d <= LIVE_MOVE) moving = false;
     await sleep(250);
   }
 }
@@ -847,8 +857,13 @@ async function liveAsk(L, c, th){
   const ctrl = L.ctrl = new AbortController(), t0 = performance.now();
   L.asks++; L.askedTh = th;
   const badge = (t, wait) => { const b = $('#liveBadge'); if (b) { b.textContent = t; b.classList.toggle('wait', !!wait); } };
-  const tick = setInterval(() => { if (L.ctrl === ctrl) { const t = `ИИ думает… ${((performance.now() - t0) / 1000).toFixed(0)} с`; $('#liveStatus').textContent = t; badge(t, true); } }, 500);
-  $('#liveStatus').textContent = 'ИИ думает…'; badge('ИИ думает…', true);
+  // "Думаю." as the question goes out, then a soft beep every 3 s until the answer: the silence is not idle
+  let beeps = 0;
+  const tick = setInterval(() => { if (L.ctrl !== ctrl) return;
+    const secs = (performance.now() - t0) / 1000, t = `ИИ думает… ${secs.toFixed(0)} с`;
+    $('#liveStatus').textContent = t; badge(t, true);
+    if (secs >= 3 * (beeps + 1)) { beeps++; cue('tick', 0); } }, 500);
+  $('#liveStatus').textContent = 'ИИ думает…'; badge('ИИ думает…', true); cue('think');
   try {
     const r = await aiCall({system: AI_LIVE_SYSTEM, schema: AI_LIVE_SCHEMA, effort: 'low', signal: ctrl.signal,
       image: c.toDataURL('image/jpeg', 0.82).split(',')[1], text: 'Answer the question in the middle of this camera frame.'});
@@ -993,7 +1008,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=e3b94232a7')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=54576fcf88')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js'; window.VOICE_BASE = 'vendor/voice-1/';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

@@ -604,7 +604,7 @@ function photo(){
   view.innerHTML = `<div class="card" id="liveCard">
       <div class="q-es">Живой режим</div>
       <p class="muted">Наведите камеру телефона на вопрос и задержите на секунду — ИИ прочитает вопрос, варианты и картинку и скажет в наушники номер вопроса и ответ. Прокрутили к следующему — снова задержите камеру.</p>
-      <div class="row" style="margin-top:0"><button class="primary big" id="liveGo">🎧 Камера + ИИ + голос</button><button id="liveStop" hidden>■ Стоп</button></div>
+      <div class="row" style="margin-top:0"><button class="primary big" id="liveGo">🎧 Камера + ИИ + голос</button><button id="liveStop" hidden>■ Стоп</button><button id="voiceTest">🔊 Проверить звук</button></div>
       <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
       <video id="liveVideo" muted playsinline hidden></video>
       <div id="liveSeen"></div>
@@ -633,6 +633,12 @@ function photo(){
   if (!md.getDisplayMedia) $('#liveScr').hidden = true;   // phones cannot share their screen
   if (!md.getUserMedia && !md.getDisplayMedia) $('#liveCard').hidden = true;
   $('#liveGo').onclick = () => startLive('camera', true);
+  $('#voiceTest').onclick = () => {
+    $('#liveStatus').textContent = 'Должна прозвучать фраза «Звук работает…». Не слышно — прибавьте громкость, на iPhone выключите беззвучный режим.';
+    const pr = unlockVoice('test');
+    if (pr) pr.catch(e => { $('#liveStatus').textContent = 'Звук не включился: ' + (e.message || e); });
+    else say([['Звук работает.', 'ru-RU']]);
+  };
   $('#liveCam').onclick = () => startLive('camera');
   $('#liveScr').onclick = () => startLive('screen');
   $('#liveStop').onclick = stopLive;
@@ -668,6 +674,45 @@ function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after anothe
   };
   if (busy) setTimeout(go, 80); else go();   // a phrase spoken right after cancel() is dropped by some Android voices
 }
+// recorded phrases (vendor/voice, pipeline/make_voice.py) played by one audio element: phones without a
+// Russian speech voice stay silent with speechSynthesis. The element plays first from a tap (unlockVoice),
+// after that the page may play it any time.
+const voiceEl = new Audio();
+let voiceSeq = 0;
+const clipUrl = name => window.VOICE_BASE + name + '.mp3';
+function unlockVoice(first = 'silence'){   // -> the play() promise, or null without recorded phrases
+  if (!window.VOICE_BASE) return null;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}   // iPhone: sound also in silent mode
+  voiceSeq++; voiceEl.src = clipUrl(first);
+  const pr = voiceEl.play(); pr.catch(() => {});
+  return pr;
+}
+async function playClips(names){   // one after another; a new call cuts the previous one (returns false then)
+  const my = ++voiceSeq;
+  for (const n of names) {
+    if (my !== voiceSeq) return false;
+    voiceEl.src = clipUrl(n);
+    try { await voiceEl.play(); }
+    catch (e) { if (my !== voiceSeq) return false; throw e; }
+    await new Promise(ok => { voiceEl.onended = voiceEl.onerror = voiceEl.onemptied = ok; });
+  }
+  return true;
+}
+function stopClips(){ voiceSeq++; voiceEl.pause(); }
+// the clips for "Вопрос 8. Ответ: второй вариант." - null when a part has no clip (then the speech voice says it)
+function answerClips(number, letters){
+  const key = l => { const u = String(l).trim().toUpperCase(); return /^[A-E1-5]$/.test(u) ? u : null; };
+  const ks = letters.map(key), n = +number;
+  if (!letters.length || ks.some(k => !k) || (number && !(Number.isInteger(n) && n >= 1 && n <= 200))) return null;
+  return [...(number ? ['q' + n] : []), ...(ks.length === 1 ? ['a-' + ks[0]] : ['as', ...ks.flatMap((k, i) => i ? ['and', 'w-' + k] : ['w-' + k])])];
+}
+function speakLive(r){
+  const letters = r.correct.map(o => o.letter), clips = window.VOICE_BASE && answerClips(r.number, letters);
+  const tts = () => say([...(r.number ? [[`Вопрос ${r.number}.`, 'ru-RU']] : []),
+    [(letters.length > 1 ? 'Ответы: ' : 'Ответ: ') + letters.map(optionWord).join(' и ') + '.', 'ru-RU']]);
+  if (!clips) return tts();
+  playClips(clips).catch(tts);
+}
 // "Вопрос 4. Ответ цэ." - the number and the letter as the screen shows them. When the letters on the
 // screen are not certain, a base letter could name another option: then the answer itself is said.
 function speakAnswer(q, texts){
@@ -695,8 +740,9 @@ const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 async function startLive(kind, ai = false){
   stopLive();
   if (ai && !store.get('cb_api_key', '')) return aiKeyForm(() => startLive(kind, true), '#liveOut');
-  // a real phrase on this tap: phones only let a page speak after it spoke from a tap
-  if ((ai || voiceCfg().on) && window.speechSynthesis) say([[ai ? 'Камера включена.' : 'Озвучка включена.', 'ru-RU']]);
+  // a real phrase on this tap: phones only let a page play sound after it played from a tap
+  if (ai) { if (!unlockVoice('cam')) say([['Камера включена.', 'ru-RU']]); }
+  else if (voiceCfg().on && window.speechSynthesis) say([['Озвучка включена.', 'ru-RU']]);
   let stream;
   try {
     stream = kind === 'screen'
@@ -721,6 +767,7 @@ function stopLive(){
   L.run = false; live = null;
   if (L.ctrl) L.ctrl.abort();
   if (window.speechSynthesis) speechSynthesis.cancel();
+  stopClips();
   L.stream.getTracks().forEach(t => t.stop());
   if (L.lock) L.lock.release().catch(() => {});
   const v = $('#liveVideo'); if (v) { v.srcObject = null; v.hidden = true; }
@@ -733,32 +780,45 @@ function frameOf(v, side){   // the current video frame on a canvas, long side a
   c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
   return c;
 }
-// a 32x24 grey thumbnail of a video frame (two smoothed steps, so small text does not flicker with hand
-// shake), and how different two are (0-255): tells "the camera rests on one view" from "the page is
-// being scrolled" without reading the text
-const thumbCv = [128, 32].map(w => { const c = document.createElement('canvas'); c.width = w; c.height = w * 3 / 4; return c; });
+// a 96x72 grey thumbnail of a video frame (smoothed in two steps against sensor noise)
+const TW = 96, TH = 72, thumbCv = [192, TW].map(w => { const c = document.createElement('canvas'); c.width = w; c.height = w * 3 / 4; return c; });
 function thumbOf(src){
   let from = src;
   for (const c of thumbCv) { const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(from, 0, 0, c.width, c.height); from = c; }
-  const d = from.getContext('2d').getImageData(0, 0, 32, 24).data, out = new Uint8Array(32 * 24);
-  for (let i = 0; i < out.length; i++) out[i] = (d[4*i] * 77 + d[4*i+1] * 150 + d[4*i+2] * 29) >> 8;
+  const d = from.getContext('2d').getImageData(0, 0, TW, TH).data, out = new Float32Array(TW * TH);
+  let m = 0;
+  for (let i = 0; i < out.length; i++) m += out[i] = (d[4*i] * 77 + d[4*i+1] * 150 + d[4*i+2] * 29) / 256;
+  m /= out.length;
+  for (let i = 0; i < out.length; i++) out[i] *= 128 / (m + 1);   // brightness evened out: the camera's exposure adjusting is not a change
   return out;
 }
-// (brightness evened out: the camera's exposure adjusting is not a movement)
+// how much of the picture changed between two thumbnails, in % of it, with the hand left out: a shaking hand
+// moves the whole picture, so the two are first matched over small whole-picture shifts; scrolling moves
+// the page inside a still picture, which no shift matches
 function thumbDiff(a, b){
-  let ma = 0, mb = 0; for (let i = 0; i < a.length; i++) { ma += a[i]; mb += b[i]; }
-  const k = (mb + 1) / (ma + 1); let s = 0;
-  for (let i = 0; i < a.length; i++) s += Math.abs(a[i] * k - b[i]);
-  return s / a.length;
+  const M = 3; let best = 100;
+  for (let dy = -M; dy <= M; dy++) for (let dx = -M; dx <= M; dx++) {
+    let n = 0, ch = 0;
+    for (let y = M; y < TH - M; y++) {
+      const ra = y * TW, rb = (y + dy) * TW + dx;
+      for (let x = M; x < TW - M; x++) { n++; if (Math.abs(a[ra + x] - b[rb + x]) > 35) ch++; }
+    }
+    best = Math.min(best, 100 * ch / n);
+  }
+  return best;
 }
 // AI camera: the view the camera rests on goes to Claude as it is (no text recognition on the phone).
-// Any clear movement (scrolling to the next question) means a new view: the request still running for
-// the old one is cancelled and the new view is asked once the camera rests again - pages of one site look
-// alike, so the views themselves are not compared. A view is compared with those of the last 0.75 s: hand
-// shake stays below LIVE_MOVE, a scroll, even a slow one, goes above it; a view that matches all of them is at rest.
-const LIVE_MOVE = 18;
+// Any clear change (scrolling to the next question, with the camera still or in hand) means a new view:
+// the request still running for the old one is cancelled and the new view is asked once the picture rests
+// again - pages of one site look alike, so the views themselves are not compared. A view is compared with
+// those of the last 0.75 s: on a filmed monitor a scroll changes 15-40 % of the picture, a shaking hand
+// under 10 %; a view that matches all of them is at rest.
+const LIVE_MOVE = 12;
 async function liveAiLoop(L){
   $('#liveStatus').textContent = 'Наведите камеру на вопрос и задержите на секунду…';
+  if (window.VOICE_BASE)   // the usual phrases into the offline cache, so the first answers are not late
+    for (const n of ['as', 'and', ...'ABCDE12345'.split('').flatMap(k => ['a-' + k, 'w-' + k]), ...Array.from({length: 40}, (_, i) => 'q' + (i + 1))])
+      fetch(clipUrl(n)).catch(() => {});
   let past = [], fresh = true;   // fresh: the view in front of the camera was not asked yet
   while (L.run) {
     const v = $('#liveVideo');
@@ -804,9 +864,7 @@ function showLiveAnswer(L, r){
   $('#liveOut').innerHTML = `<div class="card"><div class="live-ans">${r.number ? 'Вопрос ' + esc(r.number) + ' → ' : 'Ответ: '}${ans}</div>
     ${r.correct.map(o => `<div class="opt ok"><span class="k">${esc(o.letter)}</span><span><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span></div>`).join('')}
     <p class="muted" style="margin:6px 0 0">${esc(r.question_es)}</p></div>`;
-  if (L.cur !== key)   // the same question asked again (the hand moved): not said twice
-    say([...(r.number ? [[`Вопрос ${r.number}.`, 'ru-RU']] : []),
-      [(r.correct.length > 1 ? 'Ответы: ' : 'Ответ: ') + r.correct.map(o => optionWord(o.letter)).join(' и ') + '.', 'ru-RU']]);
+  if (L.cur !== key) speakLive(r);   // the same question asked again (the hand moved): not said twice
   L.cur = key;
   // revision list: every question answered in this session, newest first
   L.seen = [r, ...L.seen.filter(x => x.question_es !== r.question_es)].slice(0, 30);
@@ -920,9 +978,9 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=b191fad078')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=5b21ccf3ae')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
-  window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
+  window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js'; window.VOICE_BASE = 'vendor/voice-1/';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);
     prefetch([...new Set(Object.values(d.img))]); };
   const saved = get('cb_pw');

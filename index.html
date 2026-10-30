@@ -524,7 +524,7 @@ function aiKeyForm(thenAsk, target = '#aiOut'){
 }
 const AI_MODEL = 'claude-opus-5-5';
 const AI_SYSTEM = `You help a Russian-speaking student prepare for the Chilean Clase B driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor"). You get a screenshot or a camera photo of a screen with one practice question in Spanish (from any practice site), its OCR text, and the closest questions from the student's database, whose marked answers are verified against the official practice site.
-Read the question and every answer option from the image exactly as written; the OCR text can contain errors, the image is authoritative. If a database question is the same question (same meaning and the same options, even if worded a little differently, with another picture or another order of options), set matched_id to its id and mark as correct the options that correspond to its ✓ answers. Otherwise answer from Chilean traffic law and the official manual and set matched_id to an empty string. Some questions have more than one correct option.
+Read the question and every answer option from the image exactly as written; the OCR text can contain errors, the image is authoritative. The image may show parts of several questions (a page that lists them, photographed with a phone): answer the one shown most completely, nearest the middle of the image, and ignore pieces of other questions or explanations cut off at the edges. If a database question is the same question (same meaning and the same options, even if worded a little differently, with another picture or another order of options), set matched_id to its id and mark as correct the options that correspond to its ✓ answers. Otherwise answer from Chilean traffic law and the official manual and set matched_id to an empty string. Some questions have more than one correct option.
 List the options in the order of the screen. letter is the option's letter as the screen shows it; if the options carry no letters, its position on the screen: "1", "2", "3"... number is the question's number as the screen shows it, or an empty string. question_ru, text_ru and explanation_ru are in Russian; the explanation is 1-3 short sentences naming the rule. confidence is high when matched or certain from the law, otherwise medium or low.`;
 const AI_SCHEMA = {type: 'object', additionalProperties: false,
   required: ['number', 'question_es', 'question_ru', 'options', 'matched_id', 'explanation_ru', 'confidence'],
@@ -729,6 +729,24 @@ async function liveLoop(L){
     c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
     const th = thumbOf(c), still = L.thumb && thumbDiff(L.thumb, th) < 12;
     L.thumb = th; L.still = still ? (L.still || 0) + 1 : 0;
+    // AI mode: Claude answers every question the camera rests on - a page that lists questions puts
+    // pieces of the previous one in view too, so the base is only a hint for Claude, not the answer.
+    // While the camera moves nothing is read; a still frame is read once and sent at once.
+    if ($('#liveAi') && $('#liveAi').checked && store.get('cb_api_key', '')) {
+      const again = L.asked && thumbDiff(L.asked, th) < 16;
+      const known = !again && (L.ai || []).find(x => thumbDiff(x.th, th) < 10);
+      if (known) { L.asked = th; if (L.cur !== known.key) showLiveAi(L, known, ''); }
+      else if (L.still >= 2 && !again && !L.aiBusy) {
+        const color = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));
+        $('#liveStatus').textContent = 'ИИ читает вопрос…';
+        let text = '';
+        try { text = (await w.recognize(color)).data.text; } catch (e) {}
+        const seen = $('#liveOcr'); if (seen) seen.textContent = text.trim().slice(0, 500) || '(ничего)';
+        if (L.run) liveAi(L, color, text, th);
+      } else if (!L.aiBusy && !again && !known) $('#liveStatus').textContent = 'Наведите на вопрос и задержите камеру — ИИ ответит…';
+      await sleep(450);
+      continue;
+    }
     const color = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));   // the AI gets the frame as seen
     const frame = L.flat ? await flatField(color) : color;   // a camera frame that gave nothing: next one with evened-out light
     let text = '';
@@ -738,12 +756,7 @@ async function liveLoop(L){
     const m = text ? findMatches(text, 1)[0] : null;
     if (isFound(m, text)) { L.flat = false; L.asked = null; liveShow(L, m, text); continue; }
     L.flat = L.kind === 'camera' && !L.flat;
-    const aiOn = $('#liveAi') && $('#liveAi').checked && store.get('cb_api_key', '');
-    // not in the base: as soon as the camera rests on the view (two frames alike), Claude reads the
-    // question, the options and the picture from the frame itself - whatever OCR made of it
-    if (aiOn && L.still >= 1) liveAi(L, color, text, th);
-    else if (!L.aiBusy) $('#liveStatus').textContent = aiOn ? 'Наведите на вопрос и задержите камеру — ИИ ответит…'
-      : L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре… (чтобы спрашивать ИИ, включите 🤖)';
+    $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре… (чтобы спрашивать ИИ, включите 🤖)';
   }
 }
 async function liveAi(L, frame, text, th){
@@ -857,7 +870,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=40f7efdd83')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=4fb7b8782e')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

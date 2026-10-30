@@ -65,6 +65,7 @@ button:disabled{opacity:.5;cursor:default}
 .big{font-size:28px;font-weight:700}
 .muted{color:var(--muted)}
 input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:12px}
+select#voiceLang{font:inherit;font-size:14px;padding:5px 6px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 select#chSel{font:inherit;font-size:14px;padding:7px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
 label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
 .drop{border:2px dashed var(--line);text-align:center}
@@ -472,6 +473,7 @@ function showShot(){
     html += `<div class="hit none">✗ В базе такого вопроса нет</div>` + ai;
   }
   $('#shotOut').innerHTML = html;
+  if (found) speakAnswer(m[0].q, shot.passes);
   $('#reFind').onclick = () => { shot.text = $('#ocrText').value; shot.passes = [shot.text]; showShot(); };
   $('#askAi').onclick = askAi;
   $('#aiKey').onclick = () => aiKeyForm(false);
@@ -560,6 +562,9 @@ function photo(){
       <div class="row" style="margin-top:0">
         <button class="primary" id="liveCam">📹 Камера</button><button id="liveScr">🖥 Экран (на ПК)</button><button id="liveStop" hidden>■ Стоп</button>
         <span class="spacer"></span><label class="chk"><input type="checkbox" id="liveThink"> сначала подумать (ответ через 3 с)</label></div>
+      <div class="row" style="margin-top:6px"><label class="chk"><input type="checkbox" id="voiceOn"> 🔊 озвучивать</label>
+        <select id="voiceLang" aria-label="Язык озвучки"><option value="ru">по-русски</option><option value="es">по-испански</option><option value="both">оба языка</option></select>
+        <label class="chk"><input type="checkbox" id="voiceQ"> и вопрос</label></div>
       <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
       <video id="liveVideo" muted playsinline hidden></video><div id="liveSeen"></div>
     </div><div id="shotOut"></div>`;
@@ -575,7 +580,39 @@ function photo(){
   $('#liveStop').onclick = stopLive;
   $('#liveThink').checked = store.get('cb_think', false);
   $('#liveThink').onchange = e => store.set('cb_think', e.target.checked);
+  const vo = voiceCfg();
+  $('#voiceOn').checked = vo.on; $('#voiceLang').value = vo.lang; $('#voiceQ').checked = vo.q;
+  if (!window.speechSynthesis) $('#voiceOn').disabled = true;
+  const saveVoice = () => store.set('cb_voice', {on: $('#voiceOn').checked, lang: $('#voiceLang').value, q: $('#voiceQ').checked});
+  $('#voiceOn').onchange = () => { saveVoice(); if ($('#voiceOn').checked) say([['Озвучка включена.', 'ru-RU']]); else if (window.speechSynthesis) speechSynthesis.cancel(); };
+  $('#voiceLang').onchange = $('#voiceQ').onchange = saveVoice;
   if (shot) showShot();
+}
+// ---- voice: the question number and the answer read out (built-in speech of the phone or browser)
+const voiceCfg = () => store.get('cb_voice', {on: false, lang: 'ru', q: false});
+const LETTER_RU = {A: 'а', B: 'бэ', C: 'цэ', D: 'дэ'};   // a Russian voice reads a Latin "C" unreliably
+function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after another; a new call cuts the previous one
+  if (!window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const voices = speechSynthesis.getVoices();
+  for (const [text, lang] of parts) {
+    const u = new SpeechSynthesisUtterance(text); u.lang = lang; u.rate = 0.95;
+    const v = voices.find(x => x.lang.replace('_', '-').toLowerCase().startsWith(lang.slice(0, 2)));
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  }
+}
+function speakAnswer(q, texts){
+  const cfg = voiceCfg(); if (!cfg.on) return;
+  const ord = texts && screenOrder(q, [].concat(texts));
+  const letter = i => ord ? ord.find(x => x.i === i).letter : 'ABCD'[i];
+  const right = q.opts.map((o, i) => [o, i]).filter(([o]) => o.ok);
+  const es = cfg.lang !== 'ru', ru = cfg.lang !== 'es';
+  const parts = [['Вопрос ' + q.id.slice(1).replace('-', ', ') + '.', 'ru-RU']];
+  if (cfg.q) { if (es) parts.push([q.es, 'es-ES']); if (ru) parts.push([q.ru, 'ru-RU']); }
+  parts.push([(right.length > 1 ? 'Ответы ' : 'Ответ ') + right.map(([, i]) => LETTER_RU[letter(i)]).join(' и ') + '.', 'ru-RU']);
+  for (const [o] of right) { if (es) parts.push([o.es, 'es-ES']); if (ru) parts.push([o.ru, 'ru-RU']); }
+  say(parts);
 }
 // ---- live: a camera pointed at the screen, or the screen itself (computer), read frame after frame;
 // the question in view is shown with its answer, and every question seen is listed for revision
@@ -583,6 +620,7 @@ let live = null;
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 async function startLive(kind){
   stopLive();
+  if (voiceCfg().on && window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(''));   // unlock speech on this tap
   let stream;
   try {
     stream = kind === 'screen'
@@ -607,6 +645,7 @@ async function startLive(kind){
 function stopLive(){
   const L = live; if (!L) return;
   L.run = false; live = null;
+  if (window.speechSynthesis) speechSynthesis.cancel();
   L.stream.getTracks().forEach(t => t.stop());
   if (L.lock) L.lock.release().catch(() => {});
   const v = $('#liveVideo'); if (v) { v.srcObject = null; v.hidden = true; }
@@ -641,7 +680,8 @@ function liveShow(L, m, text){
   L.cur = q.id;
   const think = $('#liveThink') && $('#liveThink').checked;
   $('#liveOut').innerHTML = answerCard(q, label, [text], think);
-  if (think) setTimeout(() => { if (L.cur === q.id && live === L) $('#liveOut').innerHTML = answerCard(q, label, [text]); }, 3000);
+  if (think) setTimeout(() => { if (L.cur === q.id && live === L) { $('#liveOut').innerHTML = answerCard(q, label, [text]); speakAnswer(q, [text]); } }, 3000);
+  else speakAnswer(q, [text]);
   // revision list: every question seen in this session, newest first
   L.seen = [q, ...L.seen.filter(x => x.id !== q.id)].slice(0, 30);
   $('#liveSeen').innerHTML = `<p class="muted" style="margin-bottom:4px">Просмотрено за сеанс: ${L.seen.length}</p>` +
@@ -720,7 +760,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=fac4ebd26d')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=59518ec338')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

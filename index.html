@@ -77,6 +77,8 @@ body.dragging .drop,body.dragging #view{outline:3px dashed var(--accent);outline
 .shot{display:block;max-width:100%;max-height:260px;margin:0 auto 8px;border-radius:8px}
 textarea.ocr{font:13px/1.4 ui-monospace,monospace;width:100%;min-height:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .hit{font-weight:700;margin:4px 0 10px}
+button.big{font-size:18px;padding:14px 18px}
+.live-ans{font-size:26px;font-weight:800;margin:4px 0 6px}
 .hit.good{color:var(--ok)} .hit.maybe{color:var(--miss)} .hit.none{color:var(--bad)}
 #liveVideo{display:block;max-width:100%;max-height:200px;margin:10px auto 0;border-radius:8px;background:#000}
 #liveVideo[hidden]{display:none}
@@ -539,26 +541,24 @@ async function toJpeg(blob){   // base64 JPEG, long side at most 1600 px
   return c.toDataURL('image/jpeg', 0.9).split(',')[1];
 }
 let sdk = null;
-// one question on an image -> Claude's answer (throws with a readable message)
-async function aiAnswer(image, text, effort = 'high'){
+// one request to Claude: an image (base64 JPEG) and text -> the parsed JSON answer (throws with a readable
+// message; err.aborted when the signal cancelled it, err.auth when the key is wrong)
+async function aiCall({system, schema, image, text, effort, signal}){
   if (!window.SDK_URL) throw new Error('ИИ работает в веб-версии приложения');
   try { sdk = sdk || await import(new URL(window.SDK_URL, location.href).href); }
   catch (e) { throw new Error('не загрузилась библиотека ИИ — нужен интернет'); }
   const A = sdk.Anthropic, client = new A({apiKey: store.get('cb_api_key', ''), dangerouslyAllowBrowser: true});
-  const ref = findMatches(text).map(({q}) => `[${q.id}] ${q.es}\n` +
-    q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
   let msg;
   try {
     msg = await client.beta.messages.parse({
       model: AI_MODEL, max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      output_config: {effort, format: sdk.betaJSONSchemaOutputFormat(AI_SCHEMA)},
-      system: AI_SYSTEM,
-      messages: [{role: 'user', content: [
-        {type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: await toJpeg(image)}},
-        {type: 'text', text: `OCR text of the image:\n${text || '(not recognized)'}\n\nClosest questions in the database:\n\n${ref}`}]}]
-    });
+      output_config: {effort, format: sdk.betaJSONSchemaOutputFormat(schema)},
+      system,
+      messages: [{role: 'user', content: [{type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: image}}, {type: 'text', text}]}]
+    }, {signal});
   } catch (e) {
+    if (e instanceof A.APIUserAbortError) { const err = new Error('отменено'); err.aborted = true; throw err; }
     const why = e instanceof A.AuthenticationError ? 'ключ не подошёл — проверьте его в «Ключ ИИ»'
       : e instanceof A.PermissionDeniedError ? 'у ключа нет доступа к модели'
       : e instanceof A.RateLimitError ? 'превышен лимит запросов — попробуйте через минуту'
@@ -570,6 +570,20 @@ async function aiAnswer(image, text, effort = 'high'){
   if (!msg.parsed_output) throw new Error('не удалось разобрать ответ модели');
   return msg.parsed_output;
 }
+// one question on an image -> Claude's full answer, checked against the closest questions of the base
+async function aiAnswer(image, text, effort = 'high'){
+  const ref = findMatches(text).map(({q}) => `[${q.id}] ${q.es}\n` +
+    q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
+  return aiCall({system: AI_SYSTEM, schema: AI_SCHEMA, effort, image: await toJpeg(image),
+    text: `OCR text of the image:\n${text || '(not recognized)'}\n\nClosest questions in the database:\n\n${ref}`});
+}
+// live camera: a short answer (number, the right options) so it comes back in seconds
+const AI_LIVE_SYSTEM = `You help a Russian-speaking student practise for the Chilean Clase B driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor"). The image is a phone camera frame of a screen with practice questions in Spanish, from any site. Take the question shown most completely, nearest the middle of the frame; ignore pieces of other questions cut off at the edges. Read the question, every answer option and the picture, if any, and answer from Chilean traffic law and the official manual. Some questions have more than one correct option.
+number is the question's number as the screen shows it, or an empty string. correct lists the right options: letter is the option's letter as the screen shows it, or, if the options carry no letters, its position on the screen ("1", "2", "3"...); text_ru translates the option into Russian. If no whole question is readable, set question_es to an empty string and correct to an empty list.`;
+const AI_LIVE_SCHEMA = {type: 'object', additionalProperties: false, required: ['number', 'question_es', 'correct'],
+  properties: {number: {type: 'string'}, question_es: {type: 'string'},
+    correct: {type: 'array', items: {type: 'object', additionalProperties: false, required: ['letter', 'text_es', 'text_ru'],
+      properties: {letter: {type: 'string'}, text_es: {type: 'string'}, text_ru: {type: 'string'}}}}}};
 function aiCard(r, texts){
   const db = r.matched_id && ALL.find(q => q.id === r.matched_id);
   return `<div class="hit ${r.confidence === 'high' ? 'good' : 'maybe'}">${r.number ? 'Вопрос ' + esc(r.number) + ' · ' : ''}Ответ ИИ · уверенность: ${{high: 'высокая', medium: 'средняя', low: 'низкая'}[r.confidence]}${db ? ' · вопрос найден в базе: ' + db.id : ' · вопроса нет в базе'}</div>
@@ -587,7 +601,22 @@ async function askAi(){
   finally { const b = $('#askAi'); if (b) b.disabled = false; }
 }
 function photo(){
-  view.innerHTML = `<div class="card drop">
+  view.innerHTML = `<div class="card" id="liveCard">
+      <div class="q-es">Живой режим</div>
+      <p class="muted">Наведите камеру телефона на вопрос и задержите на секунду — ИИ прочитает вопрос, варианты и картинку и скажет в наушники номер вопроса и ответ. Прокрутили к следующему — снова задержите камеру.</p>
+      <div class="row" style="margin-top:0"><button class="primary big" id="liveGo">🎧 Камера + ИИ + голос</button><button id="liveStop" hidden>■ Стоп</button></div>
+      <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
+      <video id="liveVideo" muted playsinline hidden></video>
+      <div id="liveSeen"></div>
+      <details id="liveMore"><summary class="muted">Другие режимы и настройки</summary>
+        <p class="muted">Поиск только по базе, без ИИ и бесплатно: работает на practicatest, где вопросы есть в базе.</p>
+        <div class="row" style="margin-top:0"><button id="liveCam">📹 Камера по базе</button><button id="liveScr">🖥 Экран (на ПК)</button><button id="aiKeyLive">Ключ ИИ</button></div>
+        <div class="row" style="margin-top:6px"><label class="chk"><input type="checkbox" id="voiceOn"> 🔊 озвучивать в режиме по базе</label>
+          <label class="chk"><input type="checkbox" id="liveThink"> сначала подумать (ответ через 3 с)</label></div>
+        <pre id="liveOcr" style="white-space:pre-wrap;font-size:12px;margin:6px 0"></pre>
+      </details>
+    </div>
+    <div class="card drop">
       <div class="q-es">Скриншот билета</div>
       <p class="muted">Вставьте скриншот <b>Ctrl+V</b> в любом месте, перетащите файл в окно, выберите его — или сфотографируйте экран с вопросом.</p>
       <div class="row" style="justify-content:center;margin-top:0">
@@ -595,27 +624,15 @@ function photo(){
         <label class="filebtn alt">Выбрать файл<input type="file" id="shotFile" accept="image/*" hidden></label></div>
       <p class="muted" style="font-size:13px">Фото: вопрос и все варианты целиком в кадре, без бликов, телефон ровно напротив экрана.</p>
       <div class="paste" id="pasteBox" contenteditable="true">На телефоне: нажмите сюда и выберите «Вставить»</div>
-    </div>
-    <div class="card" id="liveCard">
-      <div class="q-es">Живой режим</div>
-      <p class="muted">Наведите камеру на экран, где вы листаете вопросы (или на компьютере покажите вкладку сайта) — номер вопроса и ответ появятся сами.</p>
-      <div class="row" style="margin-top:0">
-        <button class="primary" id="liveCam">📹 Камера</button><button id="liveScr">🖥 Экран (на ПК)</button><button id="liveStop" hidden>■ Стоп</button>
-        <span class="spacer"></span><label class="chk"><input type="checkbox" id="liveThink"> сначала подумать (ответ через 3 с)</label></div>
-      <div class="row" style="margin-top:6px"><label class="chk"><input type="checkbox" id="voiceOn"> 🔊 озвучивать номер и ответ</label>
-        <label class="chk"><input type="checkbox" id="liveAi"> 🤖 спрашивать ИИ, если вопроса нет в базе</label></div>
-      <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
-      <video id="liveVideo" muted playsinline hidden></video>
-      <details><summary class="muted">Что распознано в кадре</summary><pre id="liveOcr" style="white-space:pre-wrap;font-size:12px;margin:6px 0"></pre></details>
-      <div id="liveSeen"></div>
     </div><div id="shotOut"></div>`;
   for (const id of ['#shotFile', '#shotCam'])   // reset after reading: the same file again still triggers
     $(id).onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) readShot(f); };
   $('#pasteBox').oninput = () => { $('#pasteBox').textContent = 'На телефоне: нажмите сюда и выберите «Вставить»'; };
   const md = navigator.mediaDevices || {};
-  if (!md.getUserMedia) $('#liveCam').hidden = true;
+  if (!md.getUserMedia) $('#liveCam').hidden = $('#liveGo').hidden = true;
   if (!md.getDisplayMedia) $('#liveScr').hidden = true;   // phones cannot share their screen
   if (!md.getUserMedia && !md.getDisplayMedia) $('#liveCard').hidden = true;
+  $('#liveGo').onclick = () => startLive('camera', true);
   $('#liveCam').onclick = () => startLive('camera');
   $('#liveScr').onclick = () => startLive('screen');
   $('#liveStop').onclick = stopLive;
@@ -623,9 +640,7 @@ function photo(){
   $('#liveThink').onchange = e => store.set('cb_think', e.target.checked);
   const vo = voiceCfg();
   $('#voiceOn').checked = vo.on;
-  $('#liveAi').checked = store.get('cb_live_ai', false);
-  $('#liveAi').onchange = e => { store.set('cb_live_ai', e.target.checked);
-    if (e.target.checked && !store.get('cb_api_key', '')) aiKeyForm(null, '#liveOut'); };
+  $('#aiKeyLive').onclick = () => aiKeyForm(null, '#liveOut');
   if (!window.speechSynthesis) $('#voiceOn').disabled = true;
   $('#voiceOn').onchange = () => { store.set('cb_voice', {on: $('#voiceOn').checked});
     if ($('#voiceOn').checked) say([['Озвучка включена.', 'ru-RU']]); else if (window.speechSynthesis) speechSynthesis.cancel(); };
@@ -639,14 +654,19 @@ const ORDINAL_RU = ['первый', 'второй', 'третий', 'четвё�
 const optionWord = l => /^[A-D]$/i.test(l) ? LETTER_RU[l.toUpperCase()] : /^\d$/.test(l) && ORDINAL_RU[+l - 1] ? ORDINAL_RU[+l - 1] + ' вариант' : l;
 function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after another; a new call cuts the previous one
   if (!window.speechSynthesis) return;
-  speechSynthesis.cancel();
-  const voices = speechSynthesis.getVoices();
-  for (const [text, lang] of parts) {
-    const u = new SpeechSynthesisUtterance(text); u.lang = lang; u.rate = 0.95;
-    const v = voices.find(x => x.lang.replace('_', '-').toLowerCase().startsWith(lang.slice(0, 2)));
-    if (v) u.voice = v;
-    speechSynthesis.speak(u);
-  }
+  const busy = speechSynthesis.speaking || speechSynthesis.pending;
+  if (busy) speechSynthesis.cancel();
+  const go = () => {
+    const voices = speechSynthesis.getVoices();
+    if (speechSynthesis.resume) speechSynthesis.resume();
+    for (const [text, lang] of parts) {
+      const u = new SpeechSynthesisUtterance(text); u.lang = lang; u.rate = 0.95;
+      const v = voices.find(x => x.lang.replace('_', '-').toLowerCase().startsWith(lang.slice(0, 2)));
+      if (v) u.voice = v;
+      speechSynthesis.speak(u);
+    }
+  };
+  if (busy) setTimeout(go, 80); else go();   // a phrase spoken right after cancel() is dropped by some Android voices
 }
 // "Вопрос 4. Ответ цэ." - the number and the letter as the screen shows them. When the letters on the
 // screen are not certain, a base letter could name another option: then the answer itself is said.
@@ -672,9 +692,11 @@ function speakAi(r){
 // the question in view is shown with its answer, and every question seen is listed for revision
 let live = null;
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
-async function startLive(kind){
+async function startLive(kind, ai = false){
   stopLive();
-  if (voiceCfg().on && window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(''));   // unlock speech on this tap
+  if (ai && !store.get('cb_api_key', '')) return aiKeyForm(() => startLive(kind, true), '#liveOut');
+  // a real phrase on this tap: phones only let a page speak after it spoke from a tap
+  if ((ai || voiceCfg().on) && window.speechSynthesis) say([[ai ? 'Камера включена.' : 'Озвучка включена.', 'ru-RU']]);
   let stream;
   try {
     stream = kind === 'screen'
@@ -685,38 +707,113 @@ async function startLive(kind){
   }
   const v = $('#liveVideo'); v.srcObject = stream; v.hidden = false;
   try { await v.play(); } catch (e) {}
-  const L = live = {stream, kind, run: true, cur: null, flat: false, seen: []};
+  const L = live = {stream, kind, ai, run: true, cur: null, flat: false, seen: [], asks: 0};
   stream.getVideoTracks()[0].addEventListener('ended', stopLive);   // "stop sharing" in the browser
   try { L.lock = await navigator.wakeLock.request('screen'); } catch (e) {}   // keep the phone awake
-  $('#liveStop').hidden = false; $('#liveCam').disabled = $('#liveScr').disabled = true;
+  $('#liveStop').hidden = false; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = true;
+  $('#liveOut').innerHTML = ''; $('#liveSeen').innerHTML = '';
   // phone in hand in front of the monitor: the answer must be on screen without scrolling
-  $('.drop').hidden = true; $('#liveCard').scrollIntoView({block: 'start'});
-  // phone in hand in front of the monitor: the answer must be on screen without scrolling
-  $('.drop').hidden = true; $('#liveCard').scrollIntoView({block: 'start'});
-  $('#liveStatus').textContent = 'Загружаю распознавание…';
-  liveLoop(L);
+  $('.drop').hidden = true; $('#liveMore').open = false; $('#liveCard').scrollIntoView({block: 'start'});
+  if (ai) liveAiLoop(L); else { $('#liveStatus').textContent = 'Загружаю распознавание…'; liveLoop(L); }
 }
 function stopLive(){
   const L = live; if (!L) return;
   L.run = false; live = null;
+  if (L.ctrl) L.ctrl.abort();
   if (window.speechSynthesis) speechSynthesis.cancel();
   L.stream.getTracks().forEach(t => t.stop());
   if (L.lock) L.lock.release().catch(() => {});
   const v = $('#liveVideo'); if (v) { v.srcObject = null; v.hidden = true; }
   if ($('.drop')) $('.drop').hidden = false;
-  if ($('.drop')) $('.drop').hidden = false;
-  if ($('#liveStop')) { $('#liveStop').hidden = true; $('#liveCam').disabled = $('#liveScr').disabled = false; $('#liveStatus').textContent = 'Остановлено.'; }
+  if ($('#liveStop')) { $('#liveStop').hidden = true; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = false; $('#liveStatus').textContent = 'Остановлено.'; }
 }
-// a 32x24 grey thumbnail of a frame, and how different two are (0-255): tells "the camera rests on one
-// view" from "the page is being scrolled" without relying on what OCR made of small screen text
-function thumbOf(canvas){
-  const t = document.createElement('canvas'); t.width = 32; t.height = 24;
-  const g = t.getContext('2d'); g.drawImage(canvas, 0, 0, 32, 24);
-  const d = g.getImageData(0, 0, 32, 24).data, out = new Uint8Array(32 * 24);
+function frameOf(v, side){   // the current video frame on a canvas, long side at most `side`
+  const k = Math.min(1, side / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
+  c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  return c;
+}
+// a 32x24 grey thumbnail of a video frame (two smoothed steps, so small text does not flicker with hand
+// shake), and how different two are (0-255): tells "the camera rests on one view" from "the page is
+// being scrolled" without reading the text
+const thumbCv = [128, 32].map(w => { const c = document.createElement('canvas'); c.width = w; c.height = w * 3 / 4; return c; });
+function thumbOf(src){
+  let from = src;
+  for (const c of thumbCv) { const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(from, 0, 0, c.width, c.height); from = c; }
+  const d = from.getContext('2d').getImageData(0, 0, 32, 24).data, out = new Uint8Array(32 * 24);
   for (let i = 0; i < out.length; i++) out[i] = (d[4*i] * 77 + d[4*i+1] * 150 + d[4*i+2] * 29) >> 8;
   return out;
 }
-const thumbDiff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
+// (brightness evened out: the camera's exposure adjusting is not a movement)
+function thumbDiff(a, b){
+  let ma = 0, mb = 0; for (let i = 0; i < a.length; i++) { ma += a[i]; mb += b[i]; }
+  const k = (mb + 1) / (ma + 1); let s = 0;
+  for (let i = 0; i < a.length; i++) s += Math.abs(a[i] * k - b[i]);
+  return s / a.length;
+}
+// AI camera: the view the camera rests on goes to Claude as it is (no text recognition on the phone).
+// Any clear movement (scrolling to the next question) means a new view: the request still running for
+// the old one is cancelled and the new view is asked once the camera rests again - pages of one site look
+// alike, so the views themselves are not compared. A view is compared with those of the last 0.75 s: hand
+// shake stays below LIVE_MOVE, a scroll, even a slow one, goes above it; a view that matches all of them is at rest.
+const LIVE_MOVE = 18;
+async function liveAiLoop(L){
+  $('#liveStatus').textContent = 'Наведите камеру на вопрос и задержите на секунду…';
+  let past = [], fresh = true;   // fresh: the view in front of the camera was not asked yet
+  while (L.run) {
+    const v = $('#liveVideo');
+    if (!v || !v.videoWidth) { await sleep(200); continue; }
+    const th = thumbOf(v), d = past.length ? Math.max(...past.map(x => thumbDiff(x, th))) : 255;
+    past = [th, ...past].slice(0, 3);
+    if (window.__liveDebug) window.__liveDebug.push(+d.toFixed(1));
+    if (L.retry) { L.retry = false; fresh = true; }   // the request for this view failed: asked again after a pause
+    if (d > LIVE_MOVE) {
+      fresh = true;
+      if (L.ctrl) { L.ctrl.abort(); L.ctrl = null; $('#liveStatus').textContent = 'Камера движется…'; }   // scrolled on before the answer came
+    } else if (fresh && performance.now() > (L.pause || 0)) { fresh = false; liveAsk(L, frameOf(v, 1600)); }
+    await sleep(250);
+  }
+}
+async function liveAsk(L, c){
+  if (L.ctrl) L.ctrl.abort();
+  const ctrl = L.ctrl = new AbortController(), t0 = performance.now();
+  L.asks++;
+  const tick = setInterval(() => { if (L.ctrl === ctrl) $('#liveStatus').textContent = `ИИ думает… ${((performance.now() - t0) / 1000).toFixed(0)} с`; }, 500);
+  $('#liveStatus').textContent = 'ИИ думает…';
+  try {
+    const r = await aiCall({system: AI_LIVE_SYSTEM, schema: AI_LIVE_SCHEMA, effort: 'low', signal: ctrl.signal,
+      image: c.toDataURL('image/jpeg', 0.85).split(',')[1], text: 'Answer the question in the middle of this camera frame.'});
+    if (L.ctrl !== ctrl || live !== L) return;
+    L.ctrl = null;
+    const secs = ((performance.now() - t0) / 1000).toFixed(0);
+    // nothing readable: asked again only once the camera is moved
+    if (!r.question_es || !r.correct.length) { $('#liveStatus').textContent = `Вопрос не читается (${secs} с) — поднесите камеру ближе или держите ровнее.`; return; }
+    $('#liveStatus').textContent = `Ответ за ${secs} с · запросов за сеанс: ${L.asks} (≈ $${(L.asks * 0.02).toFixed(2)})`;
+    showLiveAnswer(L, r);
+  } catch (e) {
+    if (e.aborted || L.ctrl !== ctrl || live !== L) return;
+    L.ctrl = null; L.retry = true;
+    $('#liveStatus').textContent = 'ИИ не ответил: ' + e.message;
+    if (e.auth) { stopLive(); aiKeyForm(() => startLive('camera', true), '#liveOut'); }
+    else L.pause = performance.now() + 3000;   // no rapid retries on errors
+  } finally { clearInterval(tick); }
+}
+function showLiveAnswer(L, r){
+  const key = r.question_es.toLowerCase().replace(/[^a-záéíóúñü0-9]+/g, ' ').trim() + '|' + r.correct.map(o => o.letter).join(',');
+  const ans = r.correct.map(o => esc(o.letter)).join(' и ');
+  $('#liveOut').innerHTML = `<div class="card"><div class="live-ans">${r.number ? 'Вопрос ' + esc(r.number) + ' → ' : 'Ответ: '}${ans}</div>
+    ${r.correct.map(o => `<div class="opt ok"><span class="k">${esc(o.letter)}</span><span><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span></div>`).join('')}
+    <p class="muted" style="margin:6px 0 0">${esc(r.question_es)}</p></div>`;
+  if (L.cur !== key)   // the same question asked again (the hand moved): not said twice
+    say([...(r.number ? [[`Вопрос ${r.number}.`, 'ru-RU']] : []),
+      [(r.correct.length > 1 ? 'Ответы: ' : 'Ответ: ') + r.correct.map(o => optionWord(o.letter)).join(' и ') + '.', 'ru-RU']]);
+  L.cur = key;
+  // revision list: every question answered in this session, newest first
+  L.seen = [r, ...L.seen.filter(x => x.question_es !== r.question_es)].slice(0, 30);
+  $('#liveSeen').innerHTML = `<p class="muted" style="margin-bottom:4px">Просмотрено за сеанс: ${L.seen.length}</p>` +
+    L.seen.map(x => `<details class="seen"><summary>${x.number ? esc(x.number) + '. ' : ''}${esc(x.question_es)}</summary>
+      ${x.correct.map(o => `<div class="opt ok"><span class="k">${esc(o.letter)}</span><span><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span></div>`).join('')}</details>`).join('');
+}
 async function liveLoop(L){
   let w;
   try { w = await getOcr(); } catch (e) { $('#liveStatus').textContent = 'Не загрузилось распознавание: ' + (e.message || e); stopLive(); return; }
@@ -724,64 +821,17 @@ async function liveLoop(L){
   while (L.run) {
     const v = $('#liveVideo');
     if (!v || !v.videoWidth) { await sleep(300); continue; }
-    const k = Math.min(1, 2000 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
-    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
-    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-    const th = thumbOf(c), still = L.thumb && thumbDiff(L.thumb, th) < 12;
-    L.thumb = th; L.still = still ? (L.still || 0) + 1 : 0;
-    // AI mode: Claude answers every question the camera rests on - a page that lists questions puts
-    // pieces of the previous one in view too, so the base is only a hint for Claude, not the answer.
-    // While the camera moves nothing is read; a still frame is read once and sent at once.
-    if ($('#liveAi') && $('#liveAi').checked && store.get('cb_api_key', '')) {
-      const again = L.asked && thumbDiff(L.asked, th) < 16;
-      const known = !again && (L.ai || []).find(x => thumbDiff(x.th, th) < 10);
-      if (known) { L.asked = th; if (L.cur !== known.key) showLiveAi(L, known, ''); }
-      else if (L.still >= 2 && !again && !L.aiBusy) {
-        const color = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));
-        $('#liveStatus').textContent = 'ИИ читает вопрос…';
-        let text = '';
-        try { text = (await w.recognize(color)).data.text; } catch (e) {}
-        const seen = $('#liveOcr'); if (seen) seen.textContent = text.trim().slice(0, 500) || '(ничего)';
-        if (L.run) liveAi(L, color, text, th);
-      } else if (!L.aiBusy && !again && !known) $('#liveStatus').textContent = 'Наведите на вопрос и задержите камеру — ИИ ответит…';
-      await sleep(450);
-      continue;
-    }
-    const color = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));   // the AI gets the frame as seen
+    const color = await new Promise(ok => frameOf(v, 2000).toBlob(ok, 'image/jpeg', 0.92));
     const frame = L.flat ? await flatField(color) : color;   // a camera frame that gave nothing: next one with evened-out light
     let text = '';
     try { text = (await w.recognize(frame)).data.text; } catch (e) {}
     if (!L.run) break;
     const seen = $('#liveOcr'); if (seen) seen.textContent = text.trim().slice(0, 500) || '(ничего)';
     const m = text ? findMatches(text, 1)[0] : null;
-    if (isFound(m, text)) { L.flat = false; L.asked = null; liveShow(L, m, text); continue; }
+    if (isFound(m, text)) { L.flat = false; liveShow(L, m, text); continue; }
     L.flat = L.kind === 'camera' && !L.flat;
-    $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре… (чтобы спрашивать ИИ, включите 🤖)';
+    $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре… (вопросы с других сайтов — кнопка «Камера + ИИ + голос»)';
   }
-}
-async function liveAi(L, frame, text, th){
-  L.ai = L.ai || []; L.aiCount = L.aiCount || 0;
-  if (L.asked && thumbDiff(L.asked, th) < 16) return;   // this view was already asked or answered: no new request
-  // a question asked before in this session (scrolled back to it): the saved answer, no new request
-  const t = tri(text), hit = L.ai.find(x => thumbDiff(x.th, th) < 10 || 2 * hits(x.t, t) / (x.t.size + t.size) >= 0.7);
-  if (hit) { L.asked = th; if (L.cur !== hit.key) showLiveAi(L, hit, text); return; }
-  if (L.aiBusy) return;
-  L.aiBusy = true; L.asked = th; $('#liveStatus').textContent = 'ИИ читает вопрос…';
-  try {
-    const r = await aiAnswer(frame, text, 'medium'), x = {t, th, r, key: 'ai:' + L.ai.length};   // medium: a faster answer on camera
-    L.ai.push(x); L.aiCount++;
-    if (live === L) showLiveAi(L, x, text);
-  } catch (e) {
-    L.asked = null;
-    if (live === L) $('#liveStatus').textContent = 'ИИ не ответил: ' + e.message;
-    if (e.auth) { const c = $('#liveAi'); if (c) c.checked = false; }   // a wrong key: stop asking
-  } finally { L.aiBusy = false; }
-}
-function showLiveAi(L, x, text){
-  L.cur = x.key;
-  $('#liveStatus').textContent = `Ответ ИИ. Запросов к ИИ за сеанс: ${L.aiCount} (≈ $${(L.aiCount * 0.05).toFixed(2)})`;
-  $('#liveOut').innerHTML = aiCard(x.r, [text]);
-  speakAi(x.r);
 }
 function liveShow(L, m, text){
   const q = m.q, label = `в кадре · совпадение ${Math.round(m.f * 100)}%`;
@@ -870,7 +920,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=4fb7b8782e')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=b191fad078')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

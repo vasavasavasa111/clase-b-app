@@ -68,6 +68,8 @@ input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;b
 select#chSel{font:inherit;font-size:14px;padding:7px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
 label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
 .drop{border:2px dashed var(--line);text-align:center}
+.drop[hidden]{display:none}
+.drop[hidden]{display:none}
 body.dragging .drop,body.dragging #view{outline:3px dashed var(--accent);outline-offset:4px}
 .paste{min-height:44px;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--muted);margin-top:10px;background:var(--bg)}
 .filebtn{display:inline-block;cursor:pointer;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);font-weight:600;padding:8px 12px}
@@ -76,6 +78,11 @@ body.dragging .drop,body.dragging #view{outline:3px dashed var(--accent);outline
 textarea.ocr{font:13px/1.4 ui-monospace,monospace;width:100%;min-height:110px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .hit{font-weight:700;margin:4px 0 10px}
 .hit.good{color:var(--ok)} .hit.maybe{color:var(--miss)} .hit.none{color:var(--bad)}
+#liveVideo{display:block;max-width:100%;max-height:200px;margin:10px auto 0;border-radius:8px;background:#000}
+#liveVideo[hidden]{display:none}
+details.seen{border-top:1px solid var(--line);padding:6px 0}
+details.seen summary{cursor:pointer;font-size:14px}
+details.seen .card{margin:8px 0 0}
 input.key{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin:8px 0}
 </style>
 <meta name="robots" content="noindex,nofollow">
@@ -343,6 +350,28 @@ async function flatField(blob){
   g.putImageData(d, 0, 0);
   return new Promise(ok => c.toBlob(ok, 'image/png'));
 }
+// Is the top candidate really the question on the screenshot? Letter trigrams alone accept a
+// different question on the same topic (shared words like "presión", "neumáticos"), so the candidate
+// must also pass at word level: its content words (4+ letters, one OCR typo allowed from 6 letters)
+// found among the screenshot's words - on average over the question and its options, and in every
+// single option, since a question with other options is another question.
+function nearWord(w, pool){
+  if (pool.has(w)) return true;
+  if (w.length < 6) return false;
+  for (const x of pool) {
+    if (Math.abs(x.length - w.length) > 1) continue;
+    if (x.length === w.length) { let d = 0; for (let i = 0; i < w.length && d < 2; i++) d += x[i] !== w[i]; if (d < 2) return true; }
+    else { const [a, b] = x.length < w.length ? [x, w] : [w, x]; for (let i = 0; i < b.length; i++) if (b.slice(0, i) + b.slice(i + 1) === a) return true; }
+  }
+  return false;
+}
+function verify(q, text){
+  const pool = new Set(normT(text).split(' '));
+  const cover = s => { const ws = normT(s).split(' ').filter(w => w.length >= 4); return ws.length ? ws.filter(w => nearWord(w, pool)).length / ws.length : 1; };
+  const ow = q.opts.map(o => cover(o.es));
+  return (cover(q.es) + ow.reduce((a, b) => a + b, 0) / ow.length) / 2 >= 0.6 && Math.min(...ow) >= 0.6;
+}
+const isFound = (m, text) => !!m && m.f >= 0.72 && verify(m.q, text);
 // histogram-equalized grey copy: brings out text dimmed under a page overlay
 function equalized(file){
   return new Promise((ok, no) => { const im = new Image(); im.onload = () => {
@@ -355,12 +384,13 @@ function equalized(file){
     for (let i = 0; i < y.length; i++) px[4*i] = px[4*i+1] = px[4*i+2] = map[y[i]];
     g.putImageData(d, 0, 0); c.toBlob(ok, 'image/png'); }; im.onerror = no; im.src = URL.createObjectURL(file); });
 }
-function answerCard(q, label, text){
+function answerCard(q, label, text, hide){
   const ord = text && screenOrder(q, [].concat(text));
   const rows = ord ? ord.map(({i, letter}) => [q.opts[i], letter]) : q.opts.map((o, i) => [o, 'ABCD'[i]]);
   const note = !text ? '' : ord ? ' · буквы как на скриншоте' : ' · порядок как в базе — сверяйте по тексту, а не по букве';
-  return `<div class="card">${qHead(q, label + note)}<div class="opts">${rows.map(([o, letter]) =>
-    optHTML(o, 0, o.ok ? 'ok' : '', o.ok ? '✓' : '').replace(/<span class="k">.<\/span>/, `<span class="k">${letter}</span>`)).join('')}</div></div>`;
+  // one number for the question here, not the list of every test it was seen in
+  return `<div class="card">${qHead(q, label + note).replace(q.seen_in.join(', '), '№ ' + q.id)}<div class="opts">${rows.map(([o, letter]) =>
+    optHTML(o, 0, o.ok && !hide ? 'ok' : '', o.ok && !hide ? '✓' : '').replace(/<span class="k">.<\/span>/, `<span class="k">${letter}</span>`)).join('')}</div></div>`;
 }
 // the site shuffles the options: find the screenshot line where each option of the base question is
 // written and order them top to bottom, so the answer carries the letter the screenshot shows
@@ -413,7 +443,7 @@ async function readShot(file){
     // nothing certain: read it again - evened-out light (glare, photo of a screen), then stronger
     // contrast (text dimmed under an overlay) - and match on all readings together
     for (const [prep, msg] of [[flatField, 'с выравниванием освещения'], [equalized, 'с усиленным контрастом']]) {
-      if (findMatches(shot.text, 1)[0].f >= 0.72) break;
+      if (isFound(findMatches(shot.text, 1)[0], shot.text)) break;
       ocrProgress = m => { const el = $('#ocrMsg'); if (el && m.status === 'recognizing text') el.textContent = `Ещё раз, ${msg}… ${Math.round(m.progress * 100)}%`; };
       const t = (await w.recognize(await prep(src))).data.text;
       shot.passes.push(t); shot.text += '\n' + t;
@@ -424,19 +454,20 @@ async function readShot(file){
 }
 function showShot(){
   const m = findMatches(shot.text), best = m.length ? m[0].f : 0, pct = s => Math.round(s * 100) + '%';
-  const near = m.filter(x => x.s >= m[0].s - 0.06 && x.f >= 0.45);
+  const found = shot.text && isFound(m[0], shot.text);
+  const near = found ? m.filter(x => x.s >= m[0].s - 0.06 && isFound(x, shot.text)) : [];
   let html = `<div class="card"><img class="shot" alt="" src="${shot.url}">
     <details><summary class="muted">Распознанный текст (можно исправить)</summary>
     <textarea class="ocr" id="ocrText">${esc(shot.text)}</textarea><div class="row"><button id="reFind">Искать снова</button></div></details></div>`;
   const ai = `<div class="row"><button class="primary" id="askAi">Спросить ИИ (Claude)</button><span class="spacer"></span><button id="aiKey">Ключ ИИ</button></div><div id="aiOut"></div>`;
-  if (shot.text && best >= 0.72) {
+  if (found) {
     html += `<div class="hit good">✓ Найдено в базе · совпадение ${pct(best)}</div>` + answerCard(m[0].q, 'из базы', shot.passes);
     if (near.length > 1) html += `<p class="muted">Похожие вопросы — если картинка другая, сверьте:</p>` + near.slice(1).map(x => answerCard(x.q, 'похож · ' + pct(x.f), shot.passes)).join('');
     html += ai;
   } else if (shot.text && best >= 0.45) {
     // the AI's answer comes first; the look-alikes from the base follow for comparison
-    html += `<div class="hit maybe">≈ Точного совпадения в базе нет</div>` + ai +
-      `<p class="muted">Похожие вопросы из базы — сверьте с вашим скриншотом:</p>` + m.slice(0, 3).map(x => answerCard(x.q, 'похож · ' + pct(x.f), shot.passes)).join('');
+    html += `<div class="hit maybe">≈ Этого вопроса, похоже, нет в базе</div>` + ai +
+      `<p class="muted">Похожие вопросы из базы — это <b>другие</b> вопросы: их ответ подходит, только если вопрос и все варианты совпадают с вашим скриншотом.</p>` + m.slice(0, 3).map(x => answerCard(x.q, 'похож · ' + pct(x.f), shot.passes)).join('');
   } else {
     html += `<div class="hit none">✗ В базе такого вопроса нет</div>` + ai;
   }
@@ -444,7 +475,7 @@ function showShot(){
   $('#reFind').onclick = () => { shot.text = $('#ocrText').value; shot.passes = [shot.text]; showShot(); };
   $('#askAi').onclick = askAi;
   $('#aiKey').onclick = () => aiKeyForm(false);
-  if (!(shot.text && best >= 0.72) && store.get('cb_api_key', '')) askAi();
+  if (!found && store.get('cb_api_key', '')) askAi();
 }
 function aiKeyForm(thenAsk){
   $('#aiOut').innerHTML = `<div class="card"><b>Ключ Claude API</b>
@@ -522,11 +553,99 @@ function photo(){
         <label class="filebtn alt">Выбрать файл<input type="file" id="shotFile" accept="image/*" hidden></label></div>
       <p class="muted" style="font-size:13px">Фото: вопрос и все варианты целиком в кадре, без бликов, телефон ровно напротив экрана.</p>
       <div class="paste" id="pasteBox" contenteditable="true">На телефоне: нажмите сюда и выберите «Вставить»</div>
+    </div>
+    <div class="card" id="liveCard">
+      <div class="q-es">Живой режим</div>
+      <p class="muted">Наведите камеру на экран, где вы листаете вопросы (или на компьютере покажите вкладку сайта) — номер вопроса и ответ появятся сами.</p>
+      <div class="row" style="margin-top:0">
+        <button class="primary" id="liveCam">📹 Камера</button><button id="liveScr">🖥 Экран (на ПК)</button><button id="liveStop" hidden>■ Стоп</button>
+        <span class="spacer"></span><label class="chk"><input type="checkbox" id="liveThink"> сначала подумать (ответ через 3 с)</label></div>
+      <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
+      <video id="liveVideo" muted playsinline hidden></video><div id="liveSeen"></div>
     </div><div id="shotOut"></div>`;
   for (const id of ['#shotFile', '#shotCam'])   // reset after reading: the same file again still triggers
     $(id).onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) readShot(f); };
   $('#pasteBox').oninput = () => { $('#pasteBox').textContent = 'На телефоне: нажмите сюда и выберите «Вставить»'; };
+  const md = navigator.mediaDevices || {};
+  if (!md.getUserMedia) $('#liveCam').hidden = true;
+  if (!md.getDisplayMedia) $('#liveScr').hidden = true;   // phones cannot share their screen
+  if (!md.getUserMedia && !md.getDisplayMedia) $('#liveCard').hidden = true;
+  $('#liveCam').onclick = () => startLive('camera');
+  $('#liveScr').onclick = () => startLive('screen');
+  $('#liveStop').onclick = stopLive;
+  $('#liveThink').checked = store.get('cb_think', false);
+  $('#liveThink').onchange = e => store.set('cb_think', e.target.checked);
   if (shot) showShot();
+}
+// ---- live: a camera pointed at the screen, or the screen itself (computer), read frame after frame;
+// the question in view is shown with its answer, and every question seen is listed for revision
+let live = null;
+const sleep = ms => new Promise(ok => setTimeout(ok, ms));
+async function startLive(kind){
+  stopLive();
+  let stream;
+  try {
+    stream = kind === 'screen'
+      ? await navigator.mediaDevices.getDisplayMedia({video: {frameRate: 5}, audio: false})
+      : await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}, audio: false});
+  } catch (e) {
+    $('#liveStatus').textContent = `Нет доступа к ${kind === 'screen' ? 'экрану' : 'камере'}: ${e.message || e}`; return;
+  }
+  const v = $('#liveVideo'); v.srcObject = stream; v.hidden = false;
+  try { await v.play(); } catch (e) {}
+  const L = live = {stream, kind, run: true, cur: null, flat: false, seen: []};
+  stream.getVideoTracks()[0].addEventListener('ended', stopLive);   // "stop sharing" in the browser
+  try { L.lock = await navigator.wakeLock.request('screen'); } catch (e) {}   // keep the phone awake
+  $('#liveStop').hidden = false; $('#liveCam').disabled = $('#liveScr').disabled = true;
+  // phone in hand in front of the monitor: the answer must be on screen without scrolling
+  $('.drop').hidden = true; $('#liveCard').scrollIntoView({block: 'start'});
+  // phone in hand in front of the monitor: the answer must be on screen without scrolling
+  $('.drop').hidden = true; $('#liveCard').scrollIntoView({block: 'start'});
+  $('#liveStatus').textContent = 'Загружаю распознавание…';
+  liveLoop(L);
+}
+function stopLive(){
+  const L = live; if (!L) return;
+  L.run = false; live = null;
+  L.stream.getTracks().forEach(t => t.stop());
+  if (L.lock) L.lock.release().catch(() => {});
+  const v = $('#liveVideo'); if (v) { v.srcObject = null; v.hidden = true; }
+  if ($('.drop')) $('.drop').hidden = false;
+  if ($('.drop')) $('.drop').hidden = false;
+  if ($('#liveStop')) { $('#liveStop').hidden = true; $('#liveCam').disabled = $('#liveScr').disabled = false; $('#liveStatus').textContent = 'Остановлено.'; }
+}
+async function liveLoop(L){
+  let w;
+  try { w = await getOcr(); } catch (e) { $('#liveStatus').textContent = 'Не загрузилось распознавание: ' + (e.message || e); stopLive(); return; }
+  ocrProgress = () => {};
+  while (L.run) {
+    const v = $('#liveVideo');
+    if (!v || !v.videoWidth) { await sleep(300); continue; }
+    const k = Math.min(1, 2000 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    let frame = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));
+    if (L.flat) frame = await flatField(frame);   // a camera frame that gave nothing: next one with evened-out light
+    let text = '';
+    try { text = (await w.recognize(frame)).data.text; } catch (e) {}
+    if (!L.run) break;
+    const m = text ? findMatches(text, 1)[0] : null;
+    if (isFound(m, text)) { L.flat = false; liveShow(L, m, text); }
+    else { L.flat = L.kind === 'camera' && !L.flat; $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре…'; }
+  }
+}
+function liveShow(L, m, text){
+  const q = m.q, label = `в кадре · совпадение ${Math.round(m.f * 100)}%`;
+  $('#liveStatus').textContent = 'Вопрос найден.';
+  if (L.cur === q.id) { const meta = $('#liveOut .meta span'); if (meta) meta.textContent = meta.textContent.replace(/совпадение \d+%/, `совпадение ${Math.round(m.f * 100)}%`); return; }
+  L.cur = q.id;
+  const think = $('#liveThink') && $('#liveThink').checked;
+  $('#liveOut').innerHTML = answerCard(q, label, [text], think);
+  if (think) setTimeout(() => { if (L.cur === q.id && live === L) $('#liveOut').innerHTML = answerCard(q, label, [text]); }, 3000);
+  // revision list: every question seen in this session, newest first
+  L.seen = [q, ...L.seen.filter(x => x.id !== q.id)].slice(0, 30);
+  $('#liveSeen').innerHTML = `<p class="muted" style="margin-bottom:4px">Просмотрено за сеанс: ${L.seen.length}</p>` +
+    L.seen.map(x => `<details class="seen"><summary>${esc(x.es)}</summary>${answerCard(x, x.id)}</details>`).join('');
 }
 // a screenshot pasted or dropped anywhere in the app opens it in the photo tab
 document.addEventListener('paste', e => {
@@ -549,6 +668,7 @@ const modes = {
   exam, list, photo
 };
 document.querySelectorAll('nav .tab').forEach(b => b.onclick = () => {
+  stopLive();   // the camera or screen capture runs only on the photo tab
   document.querySelectorAll('nav .tab').forEach(x => x.setAttribute('aria-pressed', x === b));
   store.set('cb_mode', b.dataset.mode);
   modes[b.dataset.mode]();
@@ -600,7 +720,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=a8e8f3d499')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=fac4ebd26d')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

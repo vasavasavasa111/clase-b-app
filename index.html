@@ -65,7 +65,6 @@ button:disabled{opacity:.5;cursor:default}
 .big{font-size:28px;font-weight:700}
 .muted{color:var(--muted)}
 input[type=search]{font:inherit;width:100%;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-bottom:12px}
-select#voiceLang{font:inherit;font-size:14px;padding:5px 6px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 select#chSel{font:inherit;font-size:14px;padding:7px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
 label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
 .drop{border:2px dashed var(--line);text-align:center}
@@ -388,10 +387,33 @@ function equalized(file){
 function answerCard(q, label, text, hide){
   const ord = text && screenOrder(q, [].concat(text));
   const rows = ord ? ord.map(({i, letter}) => [q.opts[i], letter]) : q.opts.map((o, i) => [o, 'ABCD'[i]]);
-  const note = !text ? '' : ord ? ' · буквы как на скриншоте' : ' · порядок как в базе — сверяйте по тексту, а не по букве';
-  // one number for the question here, not the list of every test it was seen in
-  return `<div class="card">${qHead(q, label + note).replace(q.seen_in.join(', '), '№ ' + q.id)}<div class="opts">${rows.map(([o, letter]) =>
+  const note = !text ? '' : ord ? (ord.marked ? ' · буквы как на скриншоте' : ' · порядок как на экране') : ' · порядок как в базе — сверяйте по тексту, а не по букве';
+  const n = text && screenNumber(q, [].concat(text));
+  // the number the screen shows leads; the base's own id is only a small note on the right
+  return `<div class="card">${(n ? `<div class="hit good" style="margin:0 0 4px">Вопрос ${n}</div>` : '') +
+    qHead(q, label + note).replace(q.seen_in.join(', '), 'в базе ' + q.id)}<div class="opts">${rows.map(([o, letter]) =>
     optHTML(o, 0, o.ok && !hide ? 'ok' : '', o.ok && !hide ? '✓' : '').replace(/<span class="k">.<\/span>/, `<span class="k">${letter}</span>`)).join('')}</div></div>`;
+}
+// the question's number as the screen shows it ("4. A menos que..." or "Pregunta 4 de 35"), so the
+// card and the voice use the number the user sees, not the base's own id
+function screenNumber(q, texts){
+  const start = tri(q.es.slice(0, 60)); let best = null;
+  for (const text of texts) for (const line of text.split('\n')) {
+    const m = line.match(/^\W{0,3}(\d{1,2})\s?[.,)]\s*(.{8,})$/);
+    if (!m) continue;
+    const t = tri(m[2].slice(0, 60)), d = 2 * hits(start, t) / (start.size + t.size);
+    if (d >= 0.35 && (!best || d > best.d)) best = {n: +m[1], d};
+  }
+  if (best) return best.n;
+  for (const text of texts) { const m = text.match(/pregunta\s+(\d{1,2})\s+de\s+\d{1,3}/i); if (m) return +m[1]; }
+  // a number alone in a badge, on one of the two lines before the question's first line
+  for (const text of texts) {
+    const lines = text.split('\n').filter(l => l.trim());
+    let qi = -1, qd = 0.35;
+    lines.forEach((l, k) => { const t = tri(l.slice(0, 60)), d = 2 * hits(start, t) / (start.size + t.size); if (d > qd) { qd = d; qi = k; } });
+    for (let k = qi - 1; k >= Math.max(0, qi - 2); k--) { const m = lines[k].match(/^\W{0,3}(\d{1,2})\W{0,3}$/); if (m) return +m[1]; }
+  }
+  return null;
 }
 // the site shuffles the options: find the screenshot line where each option of the base question is
 // written and order them top to bottom, so the answer carries the letter the screenshot shows
@@ -399,14 +421,25 @@ function answerCard(q, label, text, hide){
 function screenOrder(q, texts){
   const dice = (x, y) => 2 * hits(x, y) / ((x.size + y.size) || 1);
   for (const text of texts) {
-    const lines = text.split('\n').map(l => l.replace(/^\W{0,3}[A-DO0]\s?[).]\s*/, '')).filter(l => normT(l).length > 1).map(tri);
+    // an option line reads "A) text" - often after OCR noise from the picture beside it
+    const lines = text.split('\n').map(l => { const mk = l.match(/(?:^|[^A-Za-z])([A-D])\s?\)\s*(.*)$/);
+      return {mark: mk ? mk[1] : null, t: tri(mk ? mk[2] : l.replace(/^\W{0,3}[A-DO0]\s?[).]\s*/, ''))}; }).filter(l => l.t.size > 3);
     const pairs = [];
-    q.opts.forEach((o, i) => { const t = tri(o.es); lines.forEach((l, k) => pairs.push({i, k, d: dice(t, l)})); });
+    q.opts.forEach((o, i) => { const t = tri(o.es); lines.forEach((l, k) => pairs.push({i, k, d: dice(t, l.t)})); });
     pairs.sort((a, b) => b.d - a.d || a.k - b.k);
     const at = {}, used = new Set();
     for (const p of pairs) if (!(p.i in at) && !used.has(p.k) && p.d >= 0.35) { at[p.i] = p.k; used.add(p.k); }
-    if (Object.keys(at).length === q.opts.length)
-      return q.opts.map((_, i) => i).sort((a, b) => at[a] - at[b]).map((i, n) => ({i, letter: 'ABCD'[n]}));
+    if (Object.keys(at).length !== q.opts.length) continue;
+    const ord = q.opts.map((_, i) => i).sort((a, b) => at[a] - at[b]).map((i, n) => ({i, letter: 'ABCD'[n]}));
+    // every letter the screen itself shows must agree; and unless half of them are readable, the
+    // options must sit together in one block of lines - so the same option text elsewhere in the
+    // picture (a chat, an explanation) cannot reorder them
+    const marks = ord.map(({i, letter}) => [lines[at[i]].mark, letter]).filter(([mk]) => mk);
+    const ks = Object.values(at), compact = Math.max(...ks) - Math.min(...ks) <= 2 * ord.length + 1;
+    if (marks.every(([mk, letter]) => mk === letter) && (marks.length * 2 >= ord.length || compact)) {
+      ord.marked = marks.length > 0;   // false: no letter read - a site without letters, or letters OCR missed
+      return ord;
+    }
   }
   return null;
 }
@@ -479,72 +512,79 @@ function showShot(){
   $('#aiKey').onclick = () => aiKeyForm(false);
   if (!found && store.get('cb_api_key', '')) askAi();
 }
-function aiKeyForm(thenAsk){
-  $('#aiOut').innerHTML = `<div class="card"><b>Ключ Claude API</b>
+function aiKeyForm(thenAsk, target = '#aiOut'){
+  $(target).innerHTML = `<div class="card"><b>Ключ Claude API</b>
     <p class="muted">Нужен только для вопросов, которых нет в базе. Хранится лишь на этом устройстве. Создать: console.anthropic.com → API Keys; там же поставьте месячный лимит расходов. Один вопрос стоит примерно 5 центов.</p>
     <p class="muted">Без ключа: отправьте этот же скриншот в ваш проект Claude «Права Clase B» — там ответ по подписке, с той же базой.</p>
     <input class="key" id="keyIn" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(store.get('cb_api_key', ''))}">
     <div class="row"><button class="primary" id="keySave">Сохранить</button><button id="keyDel">Удалить ключ</button></div></div>`;
-  $('#keySave').onclick = () => { store.set('cb_api_key', $('#keyIn').value.trim()); if (thenAsk && store.get('cb_api_key', '')) askAi(); else $('#aiOut').innerHTML = '<p class="muted">Ключ сохранён.</p>'; };
-  $('#keyDel').onclick = () => { store.set('cb_api_key', ''); $('#aiOut').innerHTML = '<p class="muted">Ключ удалён с устройства.</p>'; };
+  $('#keySave').onclick = () => { store.set('cb_api_key', $('#keyIn').value.trim());
+    if (thenAsk && store.get('cb_api_key', '')) thenAsk(); else $(target).innerHTML = '<p class="muted">Ключ сохранён.</p>'; };
+  $('#keyDel').onclick = () => { store.set('cb_api_key', ''); $(target).innerHTML = '<p class="muted">Ключ удалён с устройства.</p>'; };
 }
 const AI_MODEL = 'claude-opus-5-5';
-const AI_SYSTEM = `You help a Russian-speaking student prepare for the Chilean Clase B driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor"). You get a screenshot of one practice question in Spanish, its OCR text, and the closest questions from the student's database, whose marked answers are verified against the official practice site.
-Read the question and every answer option from the image exactly as written; the OCR text can contain errors, the image is authoritative. If a database question is the same question (same meaning and the same options, even if the picture or the order of options differs), set matched_id to its id and mark as correct the options that correspond to its ✓ answers. Otherwise answer from Chilean traffic law and the official manual and set matched_id to an empty string. Some questions have more than one correct option.
-List the options in the order of the screenshot, with the letters shown there (A, B, C... if none). question_ru, text_ru and explanation_ru are in Russian; the explanation is 1-3 short sentences naming the rule. confidence is high when matched or certain from the law, otherwise medium or low.`;
+const AI_SYSTEM = `You help a Russian-speaking student prepare for the Chilean Clase B driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor"). You get a screenshot or a camera photo of a screen with one practice question in Spanish (from any practice site), its OCR text, and the closest questions from the student's database, whose marked answers are verified against the official practice site.
+Read the question and every answer option from the image exactly as written; the OCR text can contain errors, the image is authoritative. If a database question is the same question (same meaning and the same options, even if worded a little differently, with another picture or another order of options), set matched_id to its id and mark as correct the options that correspond to its ✓ answers. Otherwise answer from Chilean traffic law and the official manual and set matched_id to an empty string. Some questions have more than one correct option.
+List the options in the order of the screen. letter is the option's letter as the screen shows it; if the options carry no letters, its position on the screen: "1", "2", "3"... number is the question's number as the screen shows it, or an empty string. question_ru, text_ru and explanation_ru are in Russian; the explanation is 1-3 short sentences naming the rule. confidence is high when matched or certain from the law, otherwise medium or low.`;
 const AI_SCHEMA = {type: 'object', additionalProperties: false,
-  required: ['question_es', 'question_ru', 'options', 'matched_id', 'explanation_ru', 'confidence'],
-  properties: {question_es: {type: 'string'}, question_ru: {type: 'string'},
+  required: ['number', 'question_es', 'question_ru', 'options', 'matched_id', 'explanation_ru', 'confidence'],
+  properties: {number: {type: 'string'}, question_es: {type: 'string'}, question_ru: {type: 'string'},
     options: {type: 'array', items: {type: 'object', additionalProperties: false, required: ['letter', 'text_es', 'text_ru', 'correct'],
       properties: {letter: {type: 'string'}, text_es: {type: 'string'}, text_ru: {type: 'string'}, correct: {type: 'boolean'}}}},
     matched_id: {type: 'string'}, explanation_ru: {type: 'string'}, confidence: {type: 'string', enum: ['high', 'medium', 'low']}}};
-function shotJpeg(file){   // base64 JPEG, long side at most 1600 px
-  return new Promise((ok, no) => { const im = new Image(); im.onload = () => {
-    const k = Math.min(1, 1600 / Math.max(im.width, im.height)), c = document.createElement('canvas');
-    c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
-    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
-    ok(c.toDataURL('image/jpeg', 0.9).split(',')[1]); }; im.onerror = no; im.src = shot.url; });
+async function toJpeg(blob){   // base64 JPEG, long side at most 1600 px
+  const im = await loadImage(blob), k = Math.min(1, 1600 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+  c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+  c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.9).split(',')[1];
 }
 let sdk = null;
-async function askAi(){
-  const key = store.get('cb_api_key', '');
-  if (!key) return aiKeyForm(true);
-  if (!window.SDK_URL) { $('#aiOut').innerHTML = '<div class="card">ИИ работает в веб-версии приложения.</div>'; return; }
-  const out = $('#aiOut'); $('#askAi').disabled = true;
-  out.innerHTML = '<div class="card muted">Спрашиваю Claude… обычно 10–40 секунд</div>';
+// one question on an image -> Claude's answer (throws with a readable message)
+async function aiAnswer(image, text){
+  if (!window.SDK_URL) throw new Error('ИИ работает в веб-версии приложения');
+  try { sdk = sdk || await import(new URL(window.SDK_URL, location.href).href); }
+  catch (e) { throw new Error('не загрузилась библиотека ИИ — нужен интернет'); }
+  const A = sdk.Anthropic, client = new A({apiKey: store.get('cb_api_key', ''), dangerouslyAllowBrowser: true});
+  const ref = findMatches(text).map(({q}) => `[${q.id}] ${q.es}\n` +
+    q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
+  let msg;
   try {
-    sdk = sdk || await import(new URL(window.SDK_URL, location.href).href);
-    const client = new sdk.Anthropic({apiKey: key, dangerouslyAllowBrowser: true});
-    const ref = findMatches(shot.text).map(({q}) => `[${q.id}] ${q.es}\n` +
-      q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
-    const msg = await client.beta.messages.parse({
+    msg = await client.beta.messages.parse({
       model: AI_MODEL, max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
       output_config: {effort: 'high', format: sdk.betaJSONSchemaOutputFormat(AI_SCHEMA)},
       system: AI_SYSTEM,
       messages: [{role: 'user', content: [
-        {type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: await shotJpeg(shot.file)}},
-        {type: 'text', text: `OCR text of the screenshot:\n${shot.text || '(not recognized)'}\n\nClosest questions in the database:\n\n${ref}`}]}]
+        {type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: await toJpeg(image)}},
+        {type: 'text', text: `OCR text of the image:\n${text || '(not recognized)'}\n\nClosest questions in the database:\n\n${ref}`}]}]
     });
-    if (msg.stop_reason === 'refusal') throw new Error('модель отказалась отвечать на этот запрос');
-    const r = msg.parsed_output;
-    if (!r) throw new Error('не удалось разобрать ответ модели');
-    const db = r.matched_id && ALL.find(q => q.id === r.matched_id);
-    out.innerHTML = `<div class="hit ${r.confidence === 'high' ? 'good' : 'maybe'}">Ответ ИИ · уверенность: ${{high: 'высокая', medium: 'средняя', low: 'низкая'}[r.confidence]}${db ? ' · вопрос найден в базе: ' + db.id : ' · вопроса нет в базе'}</div>
-      <div class="card"><div class="peekable"><div class="q-es">${esc(r.question_es)}</div><div class="ru">${esc(r.question_ru)}</div></div>
-      <div class="opts">${r.options.map(o => `<div class="opt ${o.correct ? 'ok' : ''}"><span class="k">${esc(o.letter)}</span>
-        <span class="peekable"><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span>${o.correct ? '<span class="tag">✓ правильный</span>' : ''}</div>`).join('')}</div>
-      <p>${esc(r.explanation_ru)}</p></div>${db ? answerCard(db, 'в базе', shot.passes) : ''}`;
   } catch (e) {
-    const A = sdk && sdk.Anthropic;
-    const why = !A ? 'не загрузилась библиотека ИИ — нужен интернет'
-      : e instanceof A.AuthenticationError ? 'ключ не подошёл — проверьте его в «Ключ ИИ»'
+    const why = e instanceof A.AuthenticationError ? 'ключ не подошёл — проверьте его в «Ключ ИИ»'
       : e instanceof A.PermissionDeniedError ? 'у ключа нет доступа к модели'
       : e instanceof A.RateLimitError ? 'превышен лимит запросов — попробуйте через минуту'
       : e instanceof A.APIConnectionError ? 'нет связи с сервером — проверьте интернет'
       : e instanceof A.APIError ? `ошибка API ${e.status || ''}: ${e.message}` : String(e.message || e);
-    out.innerHTML = `<div class="card">ИИ не ответил: ${esc(why)}</div>`;
-  } finally { const b = $('#askAi'); if (b) b.disabled = false; }
+    const err = new Error(why); err.auth = e instanceof A.AuthenticationError; throw err;
+  }
+  if (msg.stop_reason === 'refusal') throw new Error('модель отказалась отвечать на этот запрос');
+  if (!msg.parsed_output) throw new Error('не удалось разобрать ответ модели');
+  return msg.parsed_output;
+}
+function aiCard(r, texts){
+  const db = r.matched_id && ALL.find(q => q.id === r.matched_id);
+  return `<div class="hit ${r.confidence === 'high' ? 'good' : 'maybe'}">${r.number ? 'Вопрос ' + esc(r.number) + ' · ' : ''}Ответ ИИ · уверенность: ${{high: 'высокая', medium: 'средняя', low: 'низкая'}[r.confidence]}${db ? ' · вопрос найден в базе: ' + db.id : ' · вопроса нет в базе'}</div>
+    <div class="card"><div class="peekable"><div class="q-es">${esc(r.question_es)}</div><div class="ru">${esc(r.question_ru)}</div></div>
+    <div class="opts">${r.options.map(o => `<div class="opt ${o.correct ? 'ok' : ''}"><span class="k">${esc(o.letter)}</span>
+      <span class="peekable"><span>${esc(o.text_es)}</span><span class="ru">${esc(o.text_ru)}</span></span>${o.correct ? '<span class="tag">✓ правильный</span>' : ''}</div>`).join('')}</div>
+    <p>${esc(r.explanation_ru)}</p></div>${db ? answerCard(db, 'в базе', texts) : ''}`;
+}
+async function askAi(){
+  if (!store.get('cb_api_key', '')) return aiKeyForm(askAi);
+  const out = $('#aiOut'); $('#askAi').disabled = true;
+  out.innerHTML = '<div class="card muted">Спрашиваю Claude… обычно 10–40 секунд</div>';
+  try { const r = await aiAnswer(shot.file, shot.text); out.innerHTML = aiCard(r, shot.passes); speakAi(r); }
+  catch (e) { out.innerHTML = `<div class="card">ИИ не ответил: ${esc(e.message)}</div>`; }
+  finally { const b = $('#askAi'); if (b) b.disabled = false; }
 }
 function photo(){
   view.innerHTML = `<div class="card drop">
@@ -562,9 +602,8 @@ function photo(){
       <div class="row" style="margin-top:0">
         <button class="primary" id="liveCam">📹 Камера</button><button id="liveScr">🖥 Экран (на ПК)</button><button id="liveStop" hidden>■ Стоп</button>
         <span class="spacer"></span><label class="chk"><input type="checkbox" id="liveThink"> сначала подумать (ответ через 3 с)</label></div>
-      <div class="row" style="margin-top:6px"><label class="chk"><input type="checkbox" id="voiceOn"> 🔊 озвучивать</label>
-        <select id="voiceLang" aria-label="Язык озвучки"><option value="ru">по-русски</option><option value="es">по-испански</option><option value="both">оба языка</option></select>
-        <label class="chk"><input type="checkbox" id="voiceQ"> и вопрос</label></div>
+      <div class="row" style="margin-top:6px"><label class="chk"><input type="checkbox" id="voiceOn"> 🔊 озвучивать номер и ответ</label>
+        <label class="chk"><input type="checkbox" id="liveAi"> 🤖 спрашивать ИИ, если вопроса нет в базе</label></div>
       <p class="muted" id="liveStatus"></p><div id="liveOut"></div>
       <video id="liveVideo" muted playsinline hidden></video><div id="liveSeen"></div>
     </div><div id="shotOut"></div>`;
@@ -581,16 +620,21 @@ function photo(){
   $('#liveThink').checked = store.get('cb_think', false);
   $('#liveThink').onchange = e => store.set('cb_think', e.target.checked);
   const vo = voiceCfg();
-  $('#voiceOn').checked = vo.on; $('#voiceLang').value = vo.lang; $('#voiceQ').checked = vo.q;
+  $('#voiceOn').checked = vo.on;
+  $('#liveAi').checked = store.get('cb_live_ai', false);
+  $('#liveAi').onchange = e => { store.set('cb_live_ai', e.target.checked);
+    if (e.target.checked && !store.get('cb_api_key', '')) aiKeyForm(null, '#liveOut'); };
   if (!window.speechSynthesis) $('#voiceOn').disabled = true;
-  const saveVoice = () => store.set('cb_voice', {on: $('#voiceOn').checked, lang: $('#voiceLang').value, q: $('#voiceQ').checked});
-  $('#voiceOn').onchange = () => { saveVoice(); if ($('#voiceOn').checked) say([['Озвучка включена.', 'ru-RU']]); else if (window.speechSynthesis) speechSynthesis.cancel(); };
-  $('#voiceLang').onchange = $('#voiceQ').onchange = saveVoice;
+  $('#voiceOn').onchange = () => { store.set('cb_voice', {on: $('#voiceOn').checked});
+    if ($('#voiceOn').checked) say([['Озвучка включена.', 'ru-RU']]); else if (window.speechSynthesis) speechSynthesis.cancel(); };
   if (shot) showShot();
 }
 // ---- voice: the question number and the answer read out (built-in speech of the phone or browser)
-const voiceCfg = () => store.get('cb_voice', {on: false, lang: 'ru', q: false});
+const voiceCfg = () => store.get('cb_voice', {on: false});
 const LETTER_RU = {A: 'а', B: 'бэ', C: 'цэ', D: 'дэ'};   // a Russian voice reads a Latin "C" unreliably
+const ORDINAL_RU = ['первый', 'второй', 'третий', 'четвёртый', 'пятый'];
+// how to name an option aloud: its letter, or "второй вариант" when the screen numbers them by position
+const optionWord = l => /^[A-D]$/i.test(l) ? LETTER_RU[l.toUpperCase()] : /^\d$/.test(l) && ORDINAL_RU[+l - 1] ? ORDINAL_RU[+l - 1] + ' вариант' : l;
 function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after another; a new call cuts the previous one
   if (!window.speechSynthesis) return;
   speechSynthesis.cancel();
@@ -602,17 +646,25 @@ function say(parts){   // [[text, 'ru-RU' | 'es-ES'], ...] read one after anothe
     speechSynthesis.speak(u);
   }
 }
+// "Вопрос 4. Ответ цэ." - the number and the letter as the screen shows them. When the letters on the
+// screen are not certain, a base letter could name another option: then the answer itself is said.
 function speakAnswer(q, texts){
-  const cfg = voiceCfg(); if (!cfg.on) return;
-  const ord = texts && screenOrder(q, [].concat(texts));
-  const letter = i => ord ? ord.find(x => x.i === i).letter : 'ABCD'[i];
-  const right = q.opts.map((o, i) => [o, i]).filter(([o]) => o.ok);
-  const es = cfg.lang !== 'ru', ru = cfg.lang !== 'es';
-  const parts = [['Вопрос ' + q.id.slice(1).replace('-', ', ') + '.', 'ru-RU']];
-  if (cfg.q) { if (es) parts.push([q.es, 'es-ES']); if (ru) parts.push([q.ru, 'ru-RU']); }
-  parts.push([(right.length > 1 ? 'Ответы ' : 'Ответ ') + right.map(([, i]) => LETTER_RU[letter(i)]).join(' и ') + '.', 'ru-RU']);
-  for (const [o] of right) { if (es) parts.push([o.es, 'es-ES']); if (ru) parts.push([o.ru, 'ru-RU']); }
+  if (!voiceCfg().on) return;
+  const all = [].concat(texts || []), ord = all.length && screenOrder(q, all), n = all.length && screenNumber(q, all);
+  const right = q.opts.map((o, i) => [o, i]).filter(([o]) => o.ok), many = right.length > 1;
+  const parts = n ? [[`Вопрос ${n}.`, 'ru-RU']] : [];
+  // letters read on the screen: "Ответ цэ."; none read (a site without letters, or letters OCR missed):
+  // "Ответ цэ, третий вариант." - right either way
+  if (ord) parts.push([(many ? 'Ответы ' : 'Ответ ') + right.map(([, i]) => { const n = ord.findIndex(x => x.i === i);
+    return LETTER_RU[ord[n].letter] + (ord.marked ? '' : ', ' + optionWord(String(n + 1))); }).join(' и ') + '.', 'ru-RU']);
+  else { parts.push([many ? 'Ответы:' : 'Ответ:', 'ru-RU']); for (const [o] of right) parts.push([o.es, 'es-ES']); }
   say(parts);
+}
+function speakAi(r){
+  if (!voiceCfg().on) return;
+  const right = r.options.filter(o => o.correct);
+  say([...(r.number ? [[`Вопрос ${r.number}.`, 'ru-RU']] : []),
+    [(right.length > 1 ? 'Ответы ИИ: ' : 'Ответ ИИ: ') + right.map(o => optionWord(o.letter)).join(' и ') + '.', 'ru-RU']]);
 }
 // ---- live: a camera pointed at the screen, or the screen itself (computer), read frame after frame;
 // the question in view is shown with its answer, and every question seen is listed for revision
@@ -663,15 +715,44 @@ async function liveLoop(L){
     const k = Math.min(1, 2000 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
     c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
     c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-    let frame = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));
-    if (L.flat) frame = await flatField(frame);   // a camera frame that gave nothing: next one with evened-out light
+    const color = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.92));   // the AI gets the frame as seen
+    const frame = L.flat ? await flatField(color) : color;   // a camera frame that gave nothing: next one with evened-out light
     let text = '';
     try { text = (await w.recognize(frame)).data.text; } catch (e) {}
     if (!L.run) break;
     const m = text ? findMatches(text, 1)[0] : null;
-    if (isFound(m, text)) { L.flat = false; liveShow(L, m, text); }
-    else { L.flat = L.kind === 'camera' && !L.flat; $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре…'; }
+    if (isFound(m, text)) { L.flat = false; L.prev = null; liveShow(L, m, text); }
+    else {
+      L.flat = L.kind === 'camera' && !L.flat;
+      // not in the base: when the same question stays in view for two frames, ask Claude (once per question)
+      const t = tri(text), steady = L.prev && 2 * hits(L.prev, t) / (L.prev.size + t.size) >= 0.75;
+      L.prev = t;
+      if (steady && $('#liveAi') && $('#liveAi').checked && store.get('cb_api_key', '') && /[?¿:]/.test(text) && normT(text).length >= 40) liveAi(L, color, text, t);
+      else if (!L.aiBusy) $('#liveStatus').textContent = L.cur ? 'Ищу следующий вопрос… (ниже — последний найденный)' : 'Ищу вопрос в кадре…';
+    }
   }
+}
+async function liveAi(L, frame, text, t){
+  L.ai = L.ai || []; L.aiCount = L.aiCount || 0;
+  // a question asked before in this session (scrolled back to it): the saved answer, no new request
+  const hit = L.ai.find(x => 2 * hits(x.t, t) / (x.t.size + t.size) >= 0.7);
+  if (hit) { if (L.cur !== hit.key) showLiveAi(L, hit, text); return; }
+  if (L.aiBusy) return;
+  L.aiBusy = true; $('#liveStatus').textContent = 'Вопроса нет в базе — спрашиваю ИИ…';
+  try {
+    const r = await aiAnswer(frame, text), x = {t, r, key: 'ai:' + L.ai.length};
+    L.ai.push(x); L.aiCount++;
+    if (live === L) showLiveAi(L, x, text);
+  } catch (e) {
+    if (live === L) $('#liveStatus').textContent = 'ИИ не ответил: ' + e.message;
+    if (e.auth) { const c = $('#liveAi'); if (c) c.checked = false; }   // a wrong key: stop asking
+  } finally { L.aiBusy = false; }
+}
+function showLiveAi(L, x, text){
+  L.cur = x.key;
+  $('#liveStatus').textContent = `Ответ ИИ. Запросов к ИИ за сеанс: ${L.aiCount} (≈ $${(L.aiCount * 0.05).toFixed(2)})`;
+  $('#liveOut').innerHTML = aiCard(x.r, [text]);
+  speakAi(x.r);
 }
 function liveShow(L, m, text){
   const q = m.q, label = `в кадре · совпадение ${Math.round(m.f * 100)}%`;
@@ -760,7 +841,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=59518ec338')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=510a9b1ec4')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

@@ -1,6 +1,6 @@
 
-const CACHE = 'clase-b-5b21ccf3ae', PHOTOS = 'clase-b-photos';
-const SHELL = ['./', './index.html', './data.enc?v=5b21ccf3ae', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const CACHE = 'clase-b-e3f2c4bc1a', PHOTOS = 'clase-b-photos';
+const SHELL = ['./', './index.html', './data.enc?v=e3f2c4bc1a', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); });
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && k !== PHOTOS).map(k => caches.delete(k)))).then(() => self.clients.claim())));

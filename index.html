@@ -86,6 +86,8 @@ button.big{font-size:18px;padding:14px 18px}
 #liveBadge{position:absolute;left:8px;right:8px;top:8px;padding:6px 12px;border-radius:10px;background:rgba(0,0,0,.62);color:#fff;font-size:26px;font-weight:800;line-height:1.25;text-align:center}
 #liveBadge:empty{display:none}
 #liveBadge.wait{font-size:17px;font-weight:600}
+#darkCover{position:fixed;inset:0;z-index:9999;background:#000;color:#1c1c1c;display:flex;align-items:flex-end;justify-content:center;padding-bottom:40px;font-size:14px;touch-action:manipulation}
+#darkCover[hidden]{display:none}
 details.seen{border-top:1px solid var(--line);padding:6px 0}
 details.seen summary{cursor:pointer;font-size:14px}
 details.seen .card{margin:8px 0 0}
@@ -702,7 +704,7 @@ function photo(){
       <div class="row" style="margin-top:4px"><label class="chk">Экзамен:
         <select id="examSel"><option value="C">Clase C — мотоцикл</option><option value="B">Clase B — автомобиль</option></select></label></div>
       <p class="muted" id="liveIntro">Наведите камеру телефона на вопрос и задержите на секунду — ИИ прочитает вопрос, варианты и картинку и скажет в наушники номер вопроса и ответ. Прокрутили к следующему — снова задержите камеру.</p>
-      <div class="row" style="margin-top:0"><button class="primary big" id="liveGo">🎧 Камера + ИИ + голос</button><button id="liveStop" hidden>■ Стоп</button><button id="voiceTest">🔊 Проверить звук</button></div>
+      <div class="row" style="margin-top:0"><button class="primary big" id="liveGo">🎧 Камера + ИИ + голос</button><button id="liveStop" hidden>■ Стоп</button><button id="liveDark" hidden>🌙 Чёрный экран</button><button id="voiceTest">🔊 Проверить звук</button></div>
       <p class="muted" id="liveStatus"></p>
       <div id="liveWrap" hidden><video id="liveVideo" muted playsinline></video><div id="liveBadge"></div></div>
       <div id="liveOut"></div>
@@ -744,6 +746,7 @@ function photo(){
   $('#liveCam').onclick = () => startLive('camera');
   $('#liveScr').onclick = () => startLive('screen');
   $('#liveStop').onclick = stopLive;
+  $('#liveDark').onclick = () => darkScreen(true);
   $('#liveThink').checked = store.get('cb_think', false);
   $('#liveThink').onchange = e => store.set('cb_think', e.target.checked);
   const vo = voiceCfg();
@@ -846,6 +849,23 @@ function speakAi(r){
 // ---- live: a camera pointed at the screen, or the screen itself (computer), read frame after frame;
 // the question in view is shown with its answer, and every question seen is listed for revision
 let live = null;
+// a black screen over the app while the camera and the voice go on: the phone stays unlocked (no pattern
+// to draw again), shows nothing and ignores touches in a pocket; a double tap brings the app back
+function darkScreen(on){
+  let c = document.getElementById('darkCover');
+  if (!c && on) {
+    c = document.createElement('div'); c.id = 'darkCover'; c.textContent = 'Двойное касание — вернуться';
+    c.addEventListener('dblclick', () => darkScreen(false));
+    document.body.appendChild(c);
+  }
+  if (c) c.hidden = !on;
+  if (on && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+  else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+// the screen-awake lock ends when the app goes to the background: taken again on return
+document.addEventListener('visibilitychange', async () => {
+  if (live && document.visibilityState === 'visible') try { live.lock = await navigator.wakeLock.request('screen'); } catch (e) {}
+});
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 async function startLive(kind, ai = false){
   stopLive();
@@ -866,7 +886,7 @@ async function startLive(kind, ai = false){
   const L = live = {stream, kind, ai, run: true, cur: null, flat: false, seen: [], asks: 0};
   stream.getVideoTracks()[0].addEventListener('ended', stopLive);   // "stop sharing" in the browser
   try { L.lock = await navigator.wakeLock.request('screen'); } catch (e) {}   // keep the phone awake
-  $('#liveStop').hidden = false; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = true;
+  $('#liveStop').hidden = $('#liveDark').hidden = false; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = true;
   $('#liveOut').innerHTML = ''; $('#liveSeen').innerHTML = '';
   // phone in hand in front of the monitor: the answer must be on screen without scrolling
   $('.drop').hidden = $('#liveIntro').hidden = true; $('#liveMore').open = false; $('#liveCard').scrollIntoView({block: 'start'});
@@ -882,7 +902,8 @@ function stopLive(){
   if (L.lock) L.lock.release().catch(() => {});
   const v = $('#liveVideo'); if (v) { v.srcObject = null; $('#liveWrap').hidden = true; }
   if ($('.drop')) $('.drop').hidden = $('#liveIntro').hidden = false;
-  if ($('#liveStop')) { $('#liveStop').hidden = true; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = false; $('#liveStatus').textContent = 'Остановлено.'; }
+  darkScreen(false);
+  if ($('#liveStop')) { $('#liveStop').hidden = $('#liveDark').hidden = true; $('#liveGo').disabled = $('#liveCam').disabled = $('#liveScr').disabled = false; $('#liveStatus').textContent = 'Остановлено.'; }
 }
 function frameOf(v, side){   // the current video frame on a canvas, long side at most `side`
   const k = Math.min(1, side / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
@@ -1107,7 +1128,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=16a4de2775')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=fefa9b2899')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js'; window.VOICE_BASE = 'vendor/voice-1/'; window.MANUAL_C = 'vendor/lnc-motociclistas-1.txt';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);

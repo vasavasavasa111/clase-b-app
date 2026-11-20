@@ -542,7 +542,7 @@ const AI_MODEL = 'claude-opus-5-5';
 const aiExam = () => store.get('cb_exam', 'C') === 'B' ? 'B' : 'C';
 const EXAM_TEXT = {
   B: `the Chilean Clase B (car) driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor")`,
-  C: `the Chilean Clase C (motorcycle) driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official "Libro del Nuevo Conductor - Motociclistas", whose full text is given above: base every answer on it - where it states a rule or a number, that is the exam's answer, even if you remember otherwise)`};
+  C: `the Chilean Clase C (motorcycle) driver's licence theory exam (CONASET; Ley de Tránsito N° 18.290 and the official manual "Libro del Nuevo Conductor - Motociclistas", 2022). You do not see the manual itself: before answering, always look the rule up with the search_manual tool, using Spanish key words of the question and its options (one search; a second one only if the first found nothing useful). Where the manual states a rule or a number, that is the exam's answer, even if you remember otherwise`};
 let manualText = null;
 async function manualC(){   // the motorcyclists' manual as text (vendor/, kept offline by the service worker)
   if (manualText) return manualText;
@@ -550,12 +550,49 @@ async function manualC(){   // the motorcyclists' manual as text (vendor/, kept 
   if (!r || !r.ok) throw new Error('не загрузился учебник для мото — нужен интернет');
   return manualText = await r.text();
 }
-// the system prompt for a request: for exam C the manual comes first, cached for an hour (the same
-// bytes on every request, so after the first one it is read from the cache at a fraction of the price)
-async function systemFor(rules){
-  if (aiExam() !== 'C') return rules;
-  return [{type: 'text', text: await manualC(), cache_control: {type: 'ephemeral', ttl: '1h'}}, {type: 'text', text: rules}];
+// the manual in passages of up to ~900 characters (within a page), searched with BM25 over Spanish words:
+// lower case, no accents, no stop words, cut to 6 letters (casco/cascos, motocicleta/motociclista)
+const STOP_ES = new Set('de la el los las y e en a que un una unos unas por con para del al se su sus lo es o u no como mas este esta estos estas son ser si cuando debe deben puede pueden hay sin sobre entre ya le les me mi muy tambien'.split(' '));
+const wordsEs = t => (t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[a-z0-9]+/g) || [])
+  .filter(w => w.length > 1 && !STOP_ES.has(w)).map(w => w.slice(0, 6));
+let manualIdx = null;
+async function manualIndex(){
+  if (manualIdx) return manualIdx;
+  const parts = [];
+  for (const page of (await manualC()).split(/\n(?=\[p\. \d+\]\n)/)) {
+    const m = page.match(/^\[p\. (\d+)\]\n/); if (!m) continue;
+    let cur = '';
+    for (const line of page.slice(m[0].length).split('\n')) {
+      if (cur && cur.length + line.length > 900) { parts.push({p: +m[1], t: cur}); cur = ''; }
+      cur += (cur ? '\n' : '') + line;
+    }
+    if (cur) parts.push({p: +m[1], t: cur});
+  }
+  const df = new Map();
+  for (const x of parts) {
+    x.n = 0; x.tf = new Map();
+    for (const w of wordsEs(x.t)) { x.n++; x.tf.set(w, (x.tf.get(w) || 0) + 1); }
+    for (const w of x.tf.keys()) df.set(w, (df.get(w) || 0) + 1);
+  }
+  return manualIdx = {parts, df, avg: parts.reduce((a, x) => a + x.n, 0) / parts.length};
 }
+async function searchManual(query, k = 5){
+  const {parts, df, avg} = await manualIndex(), q = [...new Set(wordsEs(query))];
+  const hits = parts.map(x => {
+    let sc = 0;
+    for (const w of q) { const f = x.tf.get(w); if (!f) continue;
+      const d = df.get(w); sc += Math.log(1 + (parts.length - d + 0.5) / (d + 0.5)) * f * 2.2 / (f + 1.2 * (0.25 + 0.75 * x.n / avg)); }
+    return [sc, x];
+  }).filter(([sc]) => sc > 0).sort((a, b) => b[0] - a[0]).slice(0, k);
+  return hits.map(([, x]) => `[página ${x.p}]\n${x.t}`).join('\n\n---\n\n') || 'Nothing found for these words: try other words.';
+}
+const MANUAL_TOOL = {name: 'search_manual', strict: true,
+  description: 'Search the official manual "Libro del Nuevo Conductor - Motociclistas" (CONASET 2022). Returns its most relevant passages with their page numbers.',
+  input_schema: {type: 'object', additionalProperties: false, required: ['query'],
+    properties: {query: {type: 'string', description: 'Spanish key words of the question and its options, e.g. "casco certificado obligatorio acompañante"'}}}};
+// what a request for the chosen exam adds: for C the manual search
+const examTools = onSearch => aiExam() !== 'C' ? {} : {tools: [MANUAL_TOOL],
+  onTool: async (name, input) => { if (onSearch) onSearch(input.query); return searchManual(input.query || ''); }};
 const AI_SYSTEM_C = `You help a Russian-speaking student prepare for ${EXAM_TEXT.C}. You get a screenshot or a camera photo of a screen with one practice question in Spanish (from any practice site).
 Read the question and every answer option from the image exactly as written. The image may show parts of several questions (a page that lists them, photographed with a phone): answer the one shown most completely, nearest the middle of the image, and ignore pieces of other questions or explanations cut off at the edges. Some questions have more than one correct option.
 List the options in the order of the screen. letter is the option's letter as the screen shows it; if the options carry no letters, its position on the screen: "1", "2", "3"... number is the question's number as the screen shows it, or an empty string. question_ru, text_ru and explanation_ru are in Russian; the explanation is 1-3 short sentences naming the rule of the manual. matched_id is always an empty string. confidence is high when the manual states the answer, otherwise medium or low.`;
@@ -577,20 +614,44 @@ async function toJpeg(blob){   // base64 JPEG, long side at most 1600 px
 let sdk = null;
 // one request to Claude: an image (base64 JPEG) and text -> the parsed JSON answer (throws with a readable
 // message; err.aborted when the signal cancelled it, err.auth when the key is wrong)
-async function aiCall({system, schema, image, text, effort, signal}){
+// what a request cost, from its token usage: claude-opus-5-5, $ per million tokens (cache writes: 5 min / 1 h)
+const PRICE = {input: 4, output: 20, read: 0.2, write5m: 5, write1h: 8};
+function costOf(u){
+  const c = u.cache_creation || {}, w1 = c.ephemeral_1h_input_tokens || 0;
+  const w5 = c.ephemeral_5m_input_tokens ?? Math.max(0, (u.cache_creation_input_tokens || 0) - w1);
+  return ((u.input_tokens || 0) * PRICE.input + (u.output_tokens || 0) * PRICE.output
+    + (u.cache_read_input_tokens || 0) * PRICE.read + w5 * PRICE.write5m + w1 * PRICE.write1h) / 1e6;
+}
+// one question to Claude: an image (base64 JPEG) and text -> the parsed JSON answer, with .cost in $ (throws
+// with a readable message; err.aborted when the signal cancelled it, err.auth when the key is wrong).
+// tools/onTool: Claude may call them (the manual search); each call is answered and Claude asked again,
+// at most two rounds of searching
+async function aiCall({system, schema, image, text, effort, signal, tools, onTool}){
   if (!window.SDK_URL) throw new Error('ИИ работает в веб-версии приложения');
   try { sdk = sdk || await import(new URL(window.SDK_URL, location.href).href); }
   catch (e) { throw new Error('не загрузилась библиотека ИИ — нужен интернет'); }
   const A = sdk.Anthropic, client = new A({apiKey: store.get('cb_api_key', ''), dangerouslyAllowBrowser: true});
-  let msg;
+  // with a tool the request is sent again after each search: the picture is cached (5 min), so the repeat
+  // reads it at a twentieth of the price
+  const messages = [{role: 'user', content: [{type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: image}},
+    {type: 'text', text, ...(tools ? {cache_control: {type: 'ephemeral'}} : {})}]}];
+  let msg, cost = 0;
   try {
-    msg = await client.beta.messages.parse({
-      model: AI_MODEL, max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      output_config: {effort, format: sdk.betaJSONSchemaOutputFormat(schema)},
-      system,
-      messages: [{role: 'user', content: [{type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: image}}, {type: 'text', text}]}]
-    }, {signal});
+    for (let round = 0; ; round++) {
+      msg = await client.beta.messages.parse({
+        model: AI_MODEL, max_tokens: 16000,
+        betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+        output_config: {effort, format: sdk.betaJSONSchemaOutputFormat(schema)},
+        system, messages, ...(tools ? {tools} : {})
+      }, {signal});
+      cost += costOf(msg.usage || {});
+      if (msg.stop_reason !== 'tool_use' || !onTool || round > 3) break;
+      // the assistant turn goes back unchanged (its thinking included), the parse helper's own fields left out
+      messages.push({role: 'assistant', content: msg.content.map(({parsed_output, parsed, ...block}) => block)});
+      messages.push({role: 'user', content: await Promise.all(msg.content.filter(c => c.type === 'tool_use').map(async c => ({
+        type: 'tool_result', tool_use_id: c.id,
+        content: round < 2 ? await onTool(c.name, c.input) : 'No more searches: answer now with what you found.'})))});
+    }
   } catch (e) {
     if (e instanceof A.APIUserAbortError) { const err = new Error('отменено'); err.aborted = true; throw err; }
     const why = e instanceof A.AuthenticationError ? 'ключ не подошёл — проверьте его в «Ключ ИИ»'
@@ -602,11 +663,11 @@ async function aiCall({system, schema, image, text, effort, signal}){
   }
   if (msg.stop_reason === 'refusal') throw new Error('модель отказалась отвечать на этот запрос');
   if (!msg.parsed_output) throw new Error('не удалось разобрать ответ модели');
-  return msg.parsed_output;
+  return Object.assign(msg.parsed_output, {cost});
 }
 // one question on an image -> Claude's full answer, checked against the closest questions of the base
 async function aiAnswer(image, text, effort = 'high'){
-  if (aiExam() === 'C') return aiCall({system: await systemFor(AI_SYSTEM_C), schema: AI_SCHEMA, effort, image: await toJpeg(image), text: 'Answer the question in this image.'});
+  if (aiExam() === 'C') return aiCall({system: AI_SYSTEM_C, schema: AI_SCHEMA, effort, image: await toJpeg(image), text: 'Answer the question in this image.', ...examTools()});
   const ref = findMatches(text).map(({q}) => `[${q.id}] ${q.es}\n` +
     q.opts.map((o, i) => `  ${'ABCD'[i]}) ${o.es}${o.ok ? '  ✓' : ''}`).join('\n')).join('\n\n');
   return aiCall({system: AI_SYSTEM, schema: AI_SCHEMA, effort, image: await toJpeg(image),
@@ -631,7 +692,7 @@ async function askAi(){
   if (!store.get('cb_api_key', '')) return aiKeyForm(askAi);
   const out = $('#aiOut'); $('#askAi').disabled = true;
   out.innerHTML = '<div class="card muted">Спрашиваю Claude… обычно 10–40 секунд</div>';
-  try { const r = await aiAnswer(shot.file, shot.text); out.innerHTML = aiCard(r, shot.passes); speakAi(r); }
+  try { const r = await aiAnswer(shot.file, shot.text); out.innerHTML = aiCard(r, shot.passes) + `<p class="muted">Ответ стоил ${(r.cost * 100).toFixed(1)}¢</p>`; speakAi(r); }
   catch (e) { out.innerHTML = `<div class="card">ИИ не ответил: ${esc(e.message)}</div>`; }
   finally { const b = $('#askAi'); if (b) b.disabled = false; }
 }
@@ -901,7 +962,8 @@ async function liveAsk(L, c, th){
     if (secs >= 3 * (beeps + 1)) { beeps++; cue('tick', 0); } }, 500);
   $('#liveStatus').textContent = 'ИИ думает…'; badge('ИИ думает…', true); cue('think');
   try {
-    const r = await aiCall({system: await systemFor(AI_LIVE_SYSTEM(aiExam())), schema: AI_LIVE_SCHEMA, effort: 'low', signal: ctrl.signal,
+    const r = await aiCall({system: AI_LIVE_SYSTEM(aiExam()), schema: AI_LIVE_SCHEMA, effort: 'low', signal: ctrl.signal,
+      ...examTools(() => { if (L.ctrl === ctrl) $('#liveStatus').textContent = 'ИИ ищет в учебнике…'; }),
       image: c.toDataURL('image/jpeg', 0.82).split(',')[1], text: 'Answer the question in the middle of this camera frame.'});
     if (L.ctrl !== ctrl || live !== L) return;
     L.ctrl = null;
@@ -909,7 +971,8 @@ async function liveAsk(L, c, th){
     // nothing readable: asked again only once the camera is moved
     if (!r.question_es || !r.correct.length) { $('#liveStatus').textContent = `Вопрос не читается (${secs} с) — поднесите камеру ближе или держите ровнее.`; badge('Не вижу вопрос — поднесите камеру ближе', true);
       L.cur = null; sayClip('unread', 'Не вижу вопрос. Поднесите камеру ближе.'); return; }
-    $('#liveStatus').textContent = `Ответ за ${secs} с · запросов за сеанс: ${L.asks} (≈ $${(L.asks * (aiExam() === 'C' ? 0.05 : 0.03)).toFixed(2)})`;
+    L.spent = (L.spent || 0) + r.cost;
+    $('#liveStatus').textContent = `Ответ за ${secs} с · стоил ${(r.cost * 100).toFixed(1)}¢ · за сеанс: ${L.asks} вопр., $${L.spent.toFixed(2)}`;
     showLiveAnswer(L, r);
   } catch (e) {
     if (e.aborted || L.ctrl !== ctrl || live !== L) return;
@@ -1044,7 +1107,7 @@ const start = store.get('cb_mode', 'train');
   }
   view.innerHTML = '<div class="card muted">Загрузка…</div>';
   let buf;
-  try { buf = new Uint8Array(await (await fetch('data.enc?v=8982f20a9e')).arrayBuffer()); }
+  try { buf = new Uint8Array(await (await fetch('data.enc?v=16a4de2775')).arrayBuffer()); }
   catch(e) { view.innerHTML = '<div class="card">Нет данных. Откройте приложение один раз с интернетом.</div>'; return; }
   window.OCR_BASE = 'ocr-5.1.1/'; window.SDK_URL = 'vendor/anthropic-sdk-1.3.0.js'; window.VOICE_BASE = 'vendor/voice-1/'; window.MANUAL_C = 'vendor/lnc-motociclistas-1.txt';
   const run = d => { photos(d.key); hidden.forEach(x => x.style.visibility = ''); startApp(d.q, d.img, d.ch);
